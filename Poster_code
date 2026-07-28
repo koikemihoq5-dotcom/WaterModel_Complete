@@ -1,0 +1,461 @@
+#大学院中間審査(D1)ポスター発表の図を作成_2026.7.27
+#======================================
+#結果1. 単日SMCvsRCR
+#======================================
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# ---------------------------------------------------------
+# 【事前処理】日付ラベルを「2025年X月X日」表記に変換
+# ---------------------------------------------------------
+# ※ df_long や stats_summary の生成部分で日付表記を更新します
+vwc_cols <- c("vwc_0630", "vwc_0707", "vwc_0713")
+date_labels <- c("2025年6月30日", "2025年7月7日", "2025年7月13日")
+
+df_long <- MRA_RAR %>%
+  select(RCR, all_of(vwc_cols)) %>%
+  pivot_longer(
+    cols = all_of(vwc_cols),
+    names_to = "Date",
+    values_to = "VWC"
+  ) %>%
+  na.omit()
+
+# 日付要素を「2025年〜」の表示に変更
+df_long$Date <- factor(df_long$Date, 
+                       levels = vwc_cols,
+                       labels = date_labels)
+
+# 統計指標の再計算（式なし・R²とRMSEのみ）
+stats_summary <- df_long %>%
+  group_by(Date) %>%
+  summarise(
+    r2 = summary(lm(RCR ~ VWC))$r.squared,
+    rmse = sqrt(mean(residuals(lm(RCR ~ VWC))^2))
+  )
+
+# ---------------------------------------------------------
+# 1. 表示位置とテキスト（R²とRMSEのみ）の設定
+# ---------------------------------------------------------
+x_pos <- min(df_long$VWC) + (max(df_long$VWC) - min(df_long$VWC)) * 0.05
+y_pos <- max(df_long$RCR) - (max(df_long$RCR) - min(df_long$RCR)) * 0.05
+
+facet_labels <- stats_summary %>%
+  mutate(
+    # 式を外し、R² と RMSE のみを大きな文字で表示
+    plot_label = sprintf("R² = %.2f\nRMSE = %.2f", r2, rmse),
+    x = x_pos,
+    y = y_pos
+  )
+
+# ---------------------------------------------------------
+# 2. パネル分割プロット（縦並び・ポスター最適化版）
+# ---------------------------------------------------------
+# 色設定のキーも新しい日付表示に更新
+custom_colors <- c(
+  "2025年6月30日"  = "#2b5c8f", 
+  "2025年7月7日"   = "#d95f02", 
+  "2025年7月13日"  = "#7570b3"
+)
+
+p_facet_annotated <- ggplot(df_long, aes(x = VWC, y = RCR, color = Date, fill = Date)) +
+  # 散布図と回帰直線
+  geom_point(size = 2.5, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2, linewidth = 1) +
+  
+  # ★ R² と RMSE（文字サイズを 5.5 に大きく設定）
+  geom_text(
+    data = facet_labels,
+    aes(x = x, y = y, label = plot_label),
+    hjust = 0, vjust = 1, # 左上揃え
+    size = 5.5,           # ★ 文字サイズを大きく（遠くからでも見やすく）
+    fontface = "bold",    # 太字
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  
+  # 日付ごとに1列3行でパネル分割
+  facet_wrap(~ Date, ncol = 1) +
+  
+  # 色設定
+  scale_color_manual(values = custom_colors) +
+  scale_fill_manual(values = custom_colors) +
+  
+  # 軸ラベルの設定
+  labs(
+    x = "Volumetric Water Content (VWC)",
+    y = "収穫時のRCRの割合" # ★ 縦軸を日本語表記に変更
+  ) +
+  
+  # テーマ設定
+  theme_bw(base_size = 14) +
+  theme(
+    strip.background = element_rect(fill = "gray90", color = "black", linewidth = 0.8),
+    strip.text = element_text(face = "bold", size = 15), # パネル見出しの文字も大きく
+    axis.title = element_text(face = "bold", size = 16),
+    axis.text = element_text(color = "black", size = 12),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    panel.grid.major = element_line(color = "gray92"),
+    legend.position = "none"
+  )
+
+# 画面表示
+print(p_facet_annotated)
+
+# 高解像度（300 dpi）縦長画像として保存
+ggsave("RCR_vs_VWC_facet_annotated.png", plot = p_facet_annotated, width = 5.5, height = 9, dpi = 300)
+
+#=================================
+#水収支モデルと実測値を合わせる
+#=================================
+library(dplyr)
+library(ggplot2)
+
+# 1. データの読み込み
+SMC_3years <- read.csv("C:/Users/koike/OneDrive/Desktop/Water/Use/SMC_3years.csv", stringsAsFactors = FALSE)
+soil_moisture_pred_3years_6to9 <- read.csv("C:/Users/koike/OneDrive/Desktop/Water/Use/soil_moisture_pred_3years_6to9.csv", stringsAsFactors = FALSE)
+
+# 2. site列を「文字列型」に確実に統一（余分な空白も除去）
+SMC_3years$site <- trimws(as.character(SMC_3years$site))
+soil_moisture_pred_3years_6to9$site <- trimws(as.character(soil_moisture_pred_3years_6to9$site))
+
+# 3. 日付型への確実な変換（ハイフン・スラッシュ両対応）
+# tryFormats を使うことで 2025/6/30 でも 2025-06-30 でも自動判定します
+SMC_3years$date <- as.Date(SMC_3years$date, tryFormats = c("%Y/%m/%d", "%Y-%m-%d"))
+soil_moisture_pred_3years_6to9$date <- as.Date(soil_moisture_pred_3years_6to9$date, tryFormats = c("%Y/%m/%d", "%Y-%m-%d"))
+
+# --- デバッグ確認（日付が NA になっていないかチェック） ---
+cat("実測データのNA件数:", sum(is.na(SMC_3years$date)), "\n")
+cat("推定データのNA件数:", sum(is.na(soil_moisture_pred_3years_6to9$date)), "\n")
+
+# 4. 結合の実行
+merged_data <- inner_join(SMC_3years, soil_moisture_pred_3years_6to9, by = c("date", "site"))
+
+# 5. 結合結果の確認
+print("【結合後のデータ先頭5行】")
+print(head(merged_data))
+cat("\n🎉 成功！結合されたデータ件数:", nrow(merged_data), "件\n")
+
+# 6. CSV保存
+write.csv(merged_data, "C:/Users/koike/OneDrive/Desktop/Water/Use/merged_SMC_3years.csv", row.names = FALSE, fileEncoding = "CP932")
+
+#=================================
+#結果2. 水収支モデルの精度（散布図）
+#=================================
+library(ggplot2)
+library(dplyr)
+
+# 1. 年（year）列の作成
+merged_data <- merged_data %>%
+  mutate(year = as.character(format(date, "%Y")))
+
+# 2. 統計指標の計算
+r2_val   <- sprintf("%.2f", cor(merged_data$SMC_obs, merged_data$SMC_pred, use = "complete.obs")^2)
+rmse_val <- sprintf("%.3f", sqrt(mean((merged_data$SMC_obs - merged_data$SMC_pred)^2, na.rm = TRUE)))
+
+label_text <- paste0("R² = ", r2_val, "\nRMSE = ", rmse_val)
+
+# 軸の最小・最大値
+min_v <- 0.0
+max_v <- 0.45
+
+p_1to1_tall <- ggplot(merged_data, aes(x = SMC_obs, y = SMC_pred, shape = year, color = year)) +
+  # 1:1 直線 (y = x)
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+  # データ点
+  geom_point(size = 3.5, alpha = 0.8) +
+  # 年ごとの形状（2023:丸, 2024:三角, 2025:四角）
+  scale_shape_manual(values = c("2023" = 16, "2024" = 17, "2025" = 15)) +
+  # 年ごとの色
+  scale_color_manual(values = c("2023" = "#1f77b4", "2024" = "#ff7f0e", "2025" = "#2ca02c")) +
+  
+  # ★ R2 / RMSE テキスト表示（文字サイズを 5.5 → 8.0 に超特大化）
+  annotate("text", x = 0.02, y = 0.43, 
+           label = label_text, hjust = 0, vjust = 1, size = 8.0, fontface = "bold") +
+  
+  # 1:1スケール固定
+  coord_fixed(xlim = c(min_v, max_v), ylim = c(min_v, max_v)) +
+  labs(
+    x = "実測土壌体積含水量 (SMC)",
+    y = "推定土壌体積含水量 (SMC)",
+    shape = "年",
+    color = "年"
+  ) +
+  
+  # ★ 凡例（年次ボックス）内のマーク自体のサイズも特大化 (size = 5.0)
+  guides(
+    shape = guide_legend(override.aes = list(size = 5.0)),
+    color = guide_legend(override.aes = list(size = 5.0))
+  ) +
+  
+  theme_bw(base_size = 14) +
+  theme(
+    axis.title = element_text(face = "bold", size = 16),
+    axis.text = element_text(color = "black", size = 13),
+    
+    # ★ 年次ボックス（凡例）の拡大設定
+    legend.position = c(0.76, 0.22),                       # 位置の微調整
+    legend.background = element_rect(fill = "white", color = "black", linewidth = 0.8), # 枠線を少し太く
+    legend.title = element_text(face = "bold", size = 16), # ボックスのタイトル「年」(12→16)
+    legend.text = element_text(size = 15),                 # 各年の文字「2023」等(11→15)
+    legend.key.size = unit(0.9, "cm"),                    # ボックス内の各項目の間隔・枠の大きさ
+    
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    panel.grid.major = element_line(color = "gray92")
+  )
+
+# プロット表示
+print(p_1to1_tall)
+
+# ★ 縦長サイズで保存（幅 5.5 × 高さ 7.5）
+ggsave(
+  "C:/Users/koike/OneDrive/Desktop/Water/Use/1to1_plot_SMC_tall.png", 
+  plot = p_1to1_tall, 
+  width = 5.5, 
+  height = 7.5, 
+  dpi = 300
+)
+
+cat("\n🎉 大文字化された縦長画像 『1to1_plot_SMC_tall.png』 が保存されました！\n")
+#=================================
+#結果2. 水収支モデルの精度（折れ線グラフ）
+#=================================
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+# 1. 2025年データのみ
+ts_data_2025 <- ts_data %>%
+  filter(year == "2025")
+
+# ★ y軸の最大値を「0.35（降水量 58.3mm）」に設定して上の無駄な空白を完全にカット！
+max_smc  <- 0.35
+max_rain <- 58.33
+scale_factor <- max_smc / max_rain
+
+p_timeseries_2025_large <- ggplot(ts_data_2025, aes(x = date)) +
+  # 【降水量】棒グラフ
+  geom_bar(aes(y = Rain * scale_factor, fill = "日降水量"), 
+           stat = "identity", alpha = 0.45, width = 1) +
+  
+  # 【推定SMC】折れ線（線を少し太く：1.0）
+  geom_line(aes(y = SMC_pred, color = "推定SMC"), linewidth = 1.0) +
+  
+  # 【実測SMC】点（赤丸を大きく：size = 3.2）
+  geom_point(aes(y = SMC_obs, shape = "実測SMC"), 
+             fill = "#d62728", color = "black", size = 3.2, stroke = 0.6, na.rm = TRUE) +
+  
+  scale_fill_manual(name = "", values = c("日降水量" = "#7ec8f8")) +
+  scale_color_manual(name = "", values = c("推定SMC" = "#1f77b4")) +
+  scale_shape_manual(name = "", values = c("実測SMC" = 21)) +
+  
+  # 2軸の設定
+  scale_y_continuous(
+    name = "SMC (m³/m³)",
+    limits = c(0, max_smc),
+    breaks = seq(0, 0.3, by = 0.1),
+    sec.axis = sec_axis(~ . / scale_factor, name = "降水量 (mm)", breaks = seq(0, 50, by = 25))
+  ) +
+  scale_x_date(date_labels = "%m/%d", date_breaks = "15 days") +
+  
+  labs(
+    x = "日付 (2025年)",
+    title = "2025年 SMCおよび降水量"
+  ) +
+  
+  # ★ 凡例（線の説明）の中にあるマーク（線・点・色の四角）自体も大文字化に合わせて大きく拡大
+  guides(
+    color = guide_legend(override.aes = list(linewidth = 1.5)),
+    shape = guide_legend(override.aes = list(size = 4.0)),
+    fill  = guide_legend(override.aes = list(alpha = 0.7))
+  ) +
+  
+  theme_bw(base_size = 14) +
+  theme(
+    aspect.ratio       = 1.35, # 自然な長方形比率
+    
+    # ★ 「2025年 SMCおよび降水量」タイトルを大きく太字に (size = 16)
+    plot.title         = element_text(face = "bold", size = 16, hjust = 0.5, margin = margin(b = 8)),
+    
+    # ★ Y軸ラベル（SMC / 降水量）を大きく太字に (size = 14)
+    axis.title.y.left  = element_text(face = "bold", color = "#1f77b4", size = 14, margin = margin(r = 6)),
+    axis.title.y.right = element_text(face = "bold", color = "#2b5c8f", size = 14, margin = margin(l = 6)),
+    
+    # ★ X軸ラベル「日付 (2025年)」を大きく太字に (size = 14)
+    axis.title.x       = element_text(face = "bold", size = 14, margin = margin(t = 6)),
+    
+    # ★ 軸の目盛り数値（0.1, 0.2 や 日付など）を大きく (size = 12)
+    axis.text          = element_text(color = "black", size = 12),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    
+    # ★ 下部の「線の説明（凡例）」の文字を大きく太字に (size = 13)
+    legend.position    = "bottom",
+    legend.direction   = "horizontal",
+    legend.background  = element_blank(),
+    legend.key         = element_blank(),
+    legend.text        = element_text(size = 13, face = "bold"),
+    legend.spacing.x   = unit(0.3, "cm"),
+    legend.key.width   = unit(1.0, "cm"), # 凡例の線の長さを伸ばして見やすく
+    
+    panel.border       = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    panel.grid.minor   = element_blank()
+  )
+
+# 描画確認
+print(p_timeseries_2025_large)
+
+# ★ 保存（文字が大きくなった分、画像をひとまわり大きく保存：幅 4.8 × 高さ 7.0 インチ）
+ggsave(
+  "C:/Users/koike/OneDrive/Desktop/Water/Use/SMC_Rain_2025_large.png", 
+  plot = p_timeseries_2025_large, 
+  width = 4.8, 
+  height = 7.0, 
+  dpi = 300
+)
+
+cat("\n🎉 文字拡大＆スケール最適化版 『SMC_Rain_2025_large.png』 が保存されました！\n")
+#=================================
+#結果3. 一定時期SMC vs RCR(決定係数の表)
+#==================================
+# =========================================================
+# 超極長＆特大文字・でかボックス版 散布図グラフ
+# =========================================================
+library(dplyr)
+library(ggplot2)
+
+output_dir <- "C:/Users/koike/OneDrive/Desktop/Water/Use/"
+
+# 対象データの抽出
+df_target <- df_all_wetness_summary %>%
+    filter(period == "1_初期(播種-V2)", threshold == "SMC_20") %>%
+    filter(!is.na(disease) & !is.na(max_cont_wet_days))
+
+# 2次多項式回帰モデルの計算
+fit_best <- lm(disease ~ poly(max_cont_wet_days, 2, raw = TRUE), data = df_target)
+fit_sum  <- summary(fit_best)
+
+# 統計数値の取得
+r2_val  <- fit_sum$r.squared
+adj_r2  <- fit_sum$adj.r.squared
+p_val   <- pf(fit_sum$fstatistic[1], fit_sum$fstatistic[2], fit_sum$fstatistic[3], lower.tail = FALSE)
+
+p_text  <- ifelse(p_val < 0.001, "p < 0.001", 
+                  ifelse(p_val < 0.01,  "p < 0.01", 
+                         ifelse(p_val < 0.05,  "p < 0.05", sprintf("p = %.3f", p_val))))
+
+stat_label <- sprintf("R² = %.2f\nAdj. R² = %.2f\n%s", r2_val, adj_r2, p_text)
+
+# グラフ描画
+p_best_plot_ultra_wide <- ggplot(df_target, aes(x = max_cont_wet_days, y = disease)) +
+    # 信頼区間付きの2次多項式回帰線
+    geom_smooth(method = "lm", formula = y ~ poly(x, 2, raw = TRUE), 
+                color = "#d95f02", fill = "#fdb462", alpha = 0.35, size = 1.6) +
+    # データポイント（ドットも少し大きめの5.0に変更）
+    geom_point(color = "#2b8cbe", alpha = 0.75, size = 5.0) +
+    # 統計値テキストボックス
+    annotate("label", x = max(df_target$max_cont_wet_days) * 0.78, y = max(df_target$disease) * 0.82,
+             label = stat_label, fill = "white", color = "black", size = 6.0, fontface = "bold",
+             label.padding = unit(0.5, "lines"), linewidth = 0.8) +
+    labs(
+        title = "2次多項式 (生育初期 (播種-V2期), 連続過湿日数, SMC 20% 閾値)",
+        x = "連続過湿日数 (日)",
+        y = "病気発生率 RCR (%)"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+        # ★ タイトルを特大サイズ(20pt)に拡大
+        plot.title       = element_text(face = "bold", size = 20, hjust = 0.5, margin = margin(b = 12)),
+        # ★ X・Y軸ラベルを大幅拡大(18pt)
+        axis.title       = element_text(face = "bold", size = 18),
+        # ★ 目盛りの数字を大幅拡大(15pt)
+        axis.text        = element_text(size = 15, face = "bold", color = "black"),
+        panel.grid.minor = element_blank()
+    )
+
+print(p_best_plot_ultra_wide)
+
+# ★ さらに横長（幅 14 インチ × 高さ 3.8 インチ）で保存
+ggsave(
+    paste0(output_dir, "best_model_plot_period1_smc20_ultrawide.png"), 
+    plot = p_best_plot_ultra_wide, 
+    width = 14, 
+    height = 3.8, 
+    dpi = 300
+)
+
+cat("\n【出力完了】さらに超横長・特大文字の散布図画像を保存しました！\n")
+
+#=================================
+#結果3. 一定時期SMC vs RCR(散布図)
+#==================================
+# =========================================================
+# タイトル・Y軸の文字を大きくした縦コンパクトヒートマップ
+# =========================================================
+library(dplyr)
+library(ggplot2)
+
+# 40% と 45% を除外したデータ
+df_r2_no40_45 <- df_r2_all %>%
+  filter(!threshold %in% c("40%", "45%", "SMC_40", "SMC_45"))
+
+max_r2 <- max(df_r2_no40_45$R2, na.rm = TRUE)
+color_limit_max <- ifelse(is.na(max_r2) || max_r2 == 0, 0.25, ceiling(max_r2 * 100) / 100)
+
+p_r2_heatmap_large_y <- ggplot(df_r2_no40_45, aes(x = metric, y = threshold, fill = R2)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  # マス目のアスペクト比を固定（縦をキュッと潰す）
+  coord_fixed(ratio = 0.35) + 
+  geom_text(
+    aes(label = ifelse(is.na(R2), "-", sprintf("%.2f", R2))), 
+    color = "black", 
+    size = 4.8, 
+    fontface = "bold"
+  ) +
+  scale_fill_gradientn(
+    colors = c("#ffffe5", "#fff7bc", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04"),
+    na.value = "gray90", 
+    limits = c(0, color_limit_max),
+    breaks = seq(0, color_limit_max, length.out = 5),
+    labels = scales::number_format(accuracy = 0.01)
+  ) +
+  facet_wrap(~ period, ncol = 2) +
+  labs(
+    title = "全条件における2次多項式回帰の決定係数 (R²)",
+    x = "評価指標",
+    y = "SMC 閾値 (%)",
+    fill = "R²"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    # ★ タイトルを大文字化 (15 -> 18pt)
+    plot.title       = element_text(face = "bold", size = 18, hjust = 0.5, margin = margin(b = 10)),
+    strip.background = element_rect(fill = "gray90", color = "black"),
+    strip.text       = element_text(face = "bold", size = 14), 
+    
+    # ★ Y軸ラベルを大文字化 (12 -> 16pt)
+    axis.title.y     = element_text(face = "bold", size = 16),
+    # ★ Y軸の数字を大文字化 (10 -> 13pt)
+    axis.text.y      = element_text(size = 13, face = "bold", color = "black"),
+    
+    # X軸のフォント設定
+    axis.title.x     = element_text(face = "bold", size = 13),
+    axis.text.x      = element_text(angle = 25, hjust = 1, size = 10.5, face = "bold", color = "black"),
+    
+    legend.title     = element_text(face = "bold", size = 11),
+    legend.text      = element_text(size = 9.5),
+    panel.grid       = element_blank()
+  )
+
+print(p_r2_heatmap_large_y)
+
+# 画像保存
+ggsave(
+  paste0(output_dir, "heatmap_R2_compact_large_y.png"), 
+  plot = p_r2_heatmap_large_y, 
+  width = 12, 
+  height = 4.2, 
+  dpi = 300
+)
+
+cat("\n【出力完了】タイトルとY軸文字を大きくした画像を保存しました！\n")
