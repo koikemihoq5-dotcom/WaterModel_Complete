@@ -67,6 +67,29 @@ stage_threshold <-
 
 
 print(stage_threshold)
+
+#==========================================================
+# V2到達までの必要GDD推定
+#==========================================================
+
+V2_GDD_required <-
+
+stage_all %>%
+    
+    filter(stage==2) %>%
+    
+    summarise(
+        
+        V2_required =
+            median(cumGDD - 
+                   min(cumGDD),
+                   na.rm=TRUE)
+        
+    )
+
+
+print(V2_GDD_required)
+
 #==========================================================
 # 8. 実測データから播種GDDを推定
 #==========================================================
@@ -90,28 +113,12 @@ do({
     b <- coef(fit)[2]
 
 
-    # 回帰からV2到達GDD
-    V2_GDD <- (2-a)/b
-
-
-    # V2までのGDDを引く
-    # ここは固定値ではなく観測中央値を使用
-
-    V2_threshold <- median(
-        stage_threshold$stageGDD[
-            stage_threshold$stage==2
-        ]
-    )
-
-
-    seedGDD <- V2_GDD - V2_threshold
+    seedGDD <- -a/b
 
 
     tibble(
 
         seeding_GDD = seedGDD,
-
-        V2_GDD = V2_GDD,
 
         slope=b,
 
@@ -141,7 +148,7 @@ seed_est <- seed_est %>%
         seeding_GDD =
             case_when(
                 
-                seeding_GDD < 50 ~ 50,
+                seeding_GDD < 0 ~ 0,
                 
                 seeding_GDD > 300 ~ 300,
                 
