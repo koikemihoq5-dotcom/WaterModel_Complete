@@ -47,65 +47,61 @@ GDD_STAGE <- c(
 # 7. 各観測から播種時GDDを逆算
 #==========================================================
 
-stage_all <-
-    
-    stage_all %>%
-    
-    mutate(
-        
-        stageGDD =
-            
-            GDD_STAGE[as.character(stage)],
-        
-        seedGDD =
-            
-            cumGDD - stageGDD
-        
-    )
+stage_threshold <-
 
+    stage_all %>%
+
+    group_by(stage) %>%
+
+    summarise(
+
+        stageGDD = median(cumGDD, na.rm=TRUE),
+
+        n = n(),
+
+        .groups="drop"
+
+    ) %>%
+
+    arrange(stage)
+
+
+print(stage_threshold)
 #==========================================================
 # 8. 実測データから播種GDDを推定
 #==========================================================
 
+
 seed_est <-
 
-stage_all %>%
+    stage_all %>%
 
-filter(
-    !is.na(cumGDD),
-    !is.na(stage)
-) %>%
+    left_join(
+        stage_threshold,
+        by="stage"
+    ) %>%
 
-group_by(site,year) %>%
+    mutate(
 
-do({
+        seedGDD = cumGDD - stageGDD
 
-    fit <- lm(stage ~ cumGDD, data=.)
+    ) %>%
 
+    group_by(site,year) %>%
 
-    # stage=0 の時のGDD
-    seedGDD <- 
-        -coef(fit)[1] / coef(fit)[2]
+    summarise(
 
+        seeding_GDD =
+            median(seedGDD,na.rm=TRUE),
 
-    tibble(
+        sd_seedGDD =
+            sd(seedGDD,na.rm=TRUE),
 
-        seeding_GDD = seedGDD,
+        n_obs=n(),
 
-        slope = coef(fit)[2],
-
-        intercept = coef(fit)[1],
-
-        R2 = summary(fit)$r.squared,
-
-        n_obs=nrow(.)
-
+        .groups="drop"
 
     )
-
-}) %>%
-
-ungroup()
 
 
 print(head(seed_est))
@@ -134,7 +130,7 @@ mapply(
     find_date_from_gdd,
     seed_est$seeding_GDD,
     seed_est$year
-),
+)
 
 origin="1970-01-01"
 
