@@ -1,203 +1,104 @@
-# =========================================================
-# 02_crop_stage_prediction.R
-# ダイズ生育ステージ推定（GDD法）
-# Koike Lab
-# =========================================================
-
-library(dplyr)
-library(tidyr)
-library(lubridate)
-
-#==========================================================
-# 1. GDD閾値（必要なら論文値に変更）
-#==========================================================
-
-GDD_STAGE <- c(
-    VE = 80,
-    V2 = 150,
-    V4 = 240,
-    V6 = 330,
-    V8 = 430,
-    V10 = 530,
-    R1 = 650
-)
-
-#==========================================================
-# 2. 気象データの読み込み
-#==========================================================
-
-weather <- read.csv(
-    "01_ProcessedData/df_weather_cleaned.csv",
-    stringsAsFactors = FALSE
-)
-
-weather$date <- as.Date(weather$date)
-
-if(!"GDD" %in% names(weather)){
-    stop("df_weather_cleaned.csv に GDD 列がありません。")
-}
-
-weather <- weather %>%
-    mutate(year = year(date)) %>%
-    arrange(date) %>%
-    group_by(year) %>%
-    mutate(cumGDD = cumsum(GDD)) %>%
-    ungroup()
-
-#==========================================================
-# 3. Vstageファイルの取得
-#==========================================================
-
-stage_files <- list.files(
-    "00_RawData",
-    pattern="Vstage.*\\.csv$|.*Vstage.*\\.csv$",
-    full.names=TRUE
-)
-
-if(length(stage_files)==0){
-    stop("Vstageファイルが見つかりません。")
-}
-
-#==========================================================
-# 4. 全年度読み込み
-#==========================================================
-
-list_stage <- list()
-list_disease <- list()
-
-for(f in stage_files){
-    
-    cat("Reading :", basename(f), "\n")
-    
-    yr <- as.numeric(gsub("[^0-9]","",basename(f)))
-    
-    raw <- read.csv(
-        f,
-        fileEncoding="CP932",
-        stringsAsFactors=FALSE
-    )
-    
-    ##-----------------------------
-    ## disease保存
-    ##-----------------------------
-    if("disease" %in% names(raw)){
-        
-        list_disease[[length(list_disease)+1]] <-
-            
-            raw %>%
-            select(
-                site=name,
-                disease
-            ) %>%
-            mutate(year=yr)
-        
-    }
-    
-    ##-----------------------------
-    ## Vstage列のみ取得
-    ##-----------------------------
-    stage_cols <- grep("^V_?[0-9]+",
-                       names(raw),
-                       value=TRUE)
-    
-    df <- raw %>%
-        
-        select(
-            site=name,
-            all_of(stage_cols)
-        ) %>%
-        
-        mutate(
-            across(
-                all_of(stage_cols),
-                as.character
-            )
-        ) %>%
-        
-        pivot_longer(
-            -site,
-            names_to="date_str",
-            values_to="stage"
-        )
-    
-    ##-----------------------------
-    ## 日付作成
-    ##-----------------------------
-    df$date_md <-
-        gsub("[^0-9]","",df$date_str)
-    
-    df$date <-
-        as.Date(
-            paste0(
-                yr,"-",
-                substr(df$date_md,1,2),"-",
-                substr(df$date_md,3,4)
-            )
-        )
-    
-    ##-----------------------------
-    ## R1,R2...をNAにする
-    ##-----------------------------
-    df$stage <-
-        ifelse(
-            grepl("^R",df$stage),
-            NA,
-            df$stage
-        )
-    
-    df$stage <- as.numeric(df$stage)
-    
-    df$year <- yr
-    
-    ##-----------------------------
-    ## NA除去
-    ##-----------------------------
-    df <- df %>%
-        filter(
-            !is.na(stage),
-            !is.na(date)
-        )
-    
-    list_stage[[length(list_stage)+1]] <- df
-    
-}
-
-stage_all <- bind_rows(list_stage)
-
-cat("\n")
-cat("Stage observations :", nrow(stage_all), "\n")
-cat("Sites :", length(unique(stage_all$site)), "\n")
-cat("Years :", unique(stage_all$year), "\n")
-cat("\n")
-
 #==========================================================
 # 5. 観測日に累積GDDを付与
 #==========================================================
 
 stage_all <-
-    
+
     stage_all %>%
-    
+
     left_join(
-        
+
         weather %>%
             select(
                 date,
+                year,
                 cumGDD
             ),
-        
-        by="date"
-        
+
+        by=c("date","year")
+
     )
 
 if(any(is.na(stage_all$cumGDD))){
-    
+
     warning("累積GDDが取得できない日があります。")
-    
+
 }
 
 #==========================================================
-# ここまで確認
+# 6. データ確認
 #==========================================================
 
-head(stage_all)
+cat("--------------------------------------------------\n")
+cat("Stage observations :", nrow(stage_all), "\n")
+cat("Sites              :", n_distinct(stage_all$site), "\n")
+cat("Years              :", paste(sort(unique(stage_all$year)),
+                                 collapse=", "), "\n")
+cat("--------------------------------------------------\n")
+
+print(head(stage_all))
+
+stage_all <- stage_all %>%
+    mutate(cumGDD = cumGDD.x) %>%
+    select(-cumGDD.x, -cumGDD.y)
+#==========================================================
+# 7. 地点ごとの GDD-Stage 回帰
+#==========================================================
+
+fit_result <-
+
+    stage_all %>%
+
+    group_by(site, year) %>%
+
+    summarise(
+
+        n = n(),
+
+        intercept = coef(lm(stage ~ cumGDD))[1],
+
+        slope     = coef(lm(stage ~ cumGDD))[2],
+
+        R2        = summary(lm(stage ~ cumGDD))$r.squared,
+
+        .groups="drop"
+
+    )
+
+#==========================================================
+# 回帰結果の確認
+#==========================================================
+
+cat("\n===== Regression summary =====\n")
+
+print(summary(fit_result$R2))
+
+cat("\nLowest R2 sites\n")
+
+print(
+
+    fit_result %>%
+
+        arrange(R2) %>%
+
+        head(10)
+
+)
+
+#==========================================================
+# 回帰係数を保存
+#==========================================================
+
+write.csv(
+
+    fit_result,
+
+    "01_ProcessedData/stage_regression_coefficients.csv",
+
+    row.names=FALSE,
+
+    fileEncoding="CP932"
+
+)
+
+cat("\nRegression coefficients saved.\n")
