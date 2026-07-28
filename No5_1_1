@@ -144,16 +144,13 @@ seed_est <- seed_est %>%
     
     mutate(
         
-        seeding_GDD =
-            case_when(
-                
-                seeding_GDD < 0 ~ 0,
-                
-                seeding_GDD > 300 ~ 300,
-                
-                TRUE ~ seeding_GDD
-                
+        seeding_GDD_adj =
+            ifelse(
+                seeding_GDD < 0,
+                0,
+                seeding_GDD
             )
+        
     )
 #==========================================================
 # 9. 播種GDD → 播種日へ変換
@@ -181,6 +178,14 @@ seed_est$seeding_date <-
         seed_est$seeding_GDD_adj,
         seed_est$year
     )
+
+head(seed_est[,c(
+"site",
+"year",
+"seeding_GDD",
+"seeding_GDD_adj",
+"seeding_date"
+)])
 #==========================================================
 # disease結合
 #==========================================================
