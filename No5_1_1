@@ -70,12 +70,14 @@ print(stage_threshold)
 #==========================================================
 # 8. 実測データから播種GDDを推定
 #==========================================================
-
 seed_est <-
 
 stage_all %>%
 
-filter(!is.na(cumGDD)) %>%
+filter(
+    !is.na(cumGDD),
+    !is.na(stage)
+) %>%
 
 group_by(site,year) %>%
 
@@ -83,21 +85,44 @@ do({
 
     fit <- lm(stage ~ cumGDD, data=.)
 
+
     a <- coef(fit)[1]
     b <- coef(fit)[2]
 
+
+    # 回帰からV2到達GDD
     V2_GDD <- (2-a)/b
 
-    seedGDD <- V2_GDD - 583
+
+    # V2までのGDDを引く
+    # ここは固定値ではなく観測中央値を使用
+
+    V2_threshold <- median(
+        stage_threshold$stageGDD[
+            stage_threshold$stage==2
+        ]
+    )
+
+
+    seedGDD <- V2_GDD - V2_threshold
+
 
     tibble(
+
         seeding_GDD = seedGDD,
+
         V2_GDD = V2_GDD,
+
         slope=b,
+
         intercept=a,
+
         R2=summary(fit)$r.squared,
+
         n_obs=nrow(.)
+
     )
+
 
 }) %>%
 
@@ -110,12 +135,18 @@ ungroup()
 #==========================================================
 
 seed_est <- seed_est %>%
+    
     mutate(
-        seeding_GDD_adj =
-            ifelse(
-                seeding_GDD < 0,
-                0,
-                seeding_GDD
+        
+        seeding_GDD =
+            case_when(
+                
+                seeding_GDD < 50 ~ 50,
+                
+                seeding_GDD > 300 ~ 300,
+                
+                TRUE ~ seeding_GDD
+                
             )
     )
 #==========================================================
