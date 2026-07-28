@@ -1,0 +1,112 @@
+# =========================================================
+# A. 2023～2026年データの整形（自動処理）
+# =========================================================
+library(dplyr)
+library(tidyr)
+
+years <- 2023:2026　#年度が増えた場合は変更
+
+for (yr in years) {
+  input_file  <- paste0("00_RawData/", yr, "Water.csv")
+  output_file <- paste0("01_ProcessedData/smc_obs_cleaned", yr, ".csv")
+  if (!file.exists(input_file)) {
+    cat("⚠ ファイルがありません:", input_file, "\n")
+    next
+  }
+
+  raw_df <- read.csv(
+    input_file,
+    fileEncoding = "CP932",
+    stringsAsFactors = FALSE
+  )
+
+  df_obs <- raw_df %>%
+    pivot_longer(
+      cols = starts_with("vwc_"),
+      names_to = "date_str",
+      values_to = "vwc_pct"
+    ) %>%
+    mutate(
+      date_clean = paste0(Year, "-", gsub("vwc_", "", date_str)),
+      date = as.Date(date_clean, format = "%Y-%m%d"),
+      SMC_obs = as.numeric(vwc_pct) / 100,
+      site = name
+    ) %>%
+    select(date, site, SMC_obs)
+
+  write.csv(
+    df_obs,
+    output_file,
+    row.names = FALSE,
+    fileEncoding = "CP932"
+  )
+
+  cat("✅ 作成:", output_file, "\n")
+}
+
+
+# =========================================================
+# B. 複数年データの結合（自動処理）
+# =========================================================
+library(dplyr)
+library(lubridate)
+# 読み込み対象年
+years <- 2023:2026
+clean_and_prep <- function(df) {
+  names(df) <- tolower(names(df))
+  df %>%
+    mutate(
+      date = as.Date(parse_date_time(date,
+                                     orders = c("Ymd", "Y/m/d", "Y-m-d"))),
+      site = as.character(site),
+      smc_obs = as.numeric(smc_obs)
+    ) %>%
+    select(date, site, smc_obs) %>%
+    rename(SMC_obs = smc_obs) %>%
+    filter(!is.na(date), !is.na(SMC_obs))
+}
+
+list_smc <- list()
+for (yr in years) {
+  file_name <- paste0(
+    "01_ProcessedData/smc_obs_cleaned",
+    yr,
+    ".csv"
+  )
+
+  if (file.exists(file_name)) {
+    df_tmp <- read.csv(
+      file_name,
+      stringsAsFactors = FALSE
+    )
+    list_smc[[as.character(yr)]] <- clean_and_prep(df_tmp)
+    cat("✅ 読み込み:", file_name, "\n")
+  } else {
+
+　   cat("⚠ 見つかりません:", file_name, "\n")
+
+  }
+}
+
+if (length(list_smc) > 0) {
+
+  SMC_all <- bind_rows(list_smc) %>%
+    distinct() %>%
+    arrange(site, date)
+
+  write.csv(
+    SMC_all,
+    "01_ProcessedData/SMC_all.csv",
+    row.names = FALSE,
+    fileEncoding = "CP932"
+  )
+
+  cat("\n🎉 統合データを保存しました。\n")
+  cat("保存先：01_ProcessedData/SMC_all.csv\n")
+  cat("データ数:", nrow(SMC_all), "行\n")
+
+} else {
+
+  cat("❌ 読み込めるファイルがありませんでした。\n")
+
+}
