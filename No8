@@ -1,86 +1,166 @@
 # =========================================================
-# 05_poster_figures.R
-# D1中間審査ポスター発表用図表の描画・高解像度保存
+# 05_plot_heatmaps_and_best_scatter_fixed3.R
+# 【facet/列名エラー完全修正版】ヒートマップ & 最高R²散布図 出力
 # =========================================================
 
-library(ggplot2)
 library(dplyr)
-library(tidyr)
+library(ggplot2)
+library(scales)
 
-# ---------------------------------------------------------
-# 図1. 単日SMC vs RCR (ファセット表示)
-# ---------------------------------------------------------
-if (exists("MRA_RAR")) {
-  vwc_cols <- c("vwc_0630", "vwc_0707", "vwc_0713")
-  date_labels <- c("2025年6月30日", "2025年7月7日", "2025年7月13日")
+output_dir <- "03_AnalysisOutputs/"
+dir.create(output_dir, showWarnings = FALSE)
 
-  df_long <- MRA_RAR %>%
-    select(RCR, all_of(vwc_cols)) %>%
-    pivot_longer(cols = all_of(vwc_cols), names_to = "Date", values_to = "VWC") %>%
-    na.omit()
+# 評価指標のマッピング（元の画像と完全に同じ順番に固定）
+metric_order <- c("連続過湿日数", "合計の過湿日数", "平均の水分量", "過湿の強さ×日数")
+
+metrics_map <- c(
+  "連続過湿日数"   = "max_cont_wet_days", 
+  "合計の過湿日数" = "total_wet_days", 
+  "平均の水分量"   = "mean_smc_all", 
+  "過湿の強さ×日数" = "excess_smc_sum"
+)
+
+target_years <- c(2024, 2025)
+
+for (y in target_years) {
   
-  df_long$Date <- factor(df_long$Date, levels = vwc_cols, labels = date_labels)
-
-  stats_summary <- df_long %>%
-    group_by(Date) %>%
-    summarise(
-      r2 = summary(lm(RCR ~ VWC))$r.squared,
-      rmse = sqrt(mean(residuals(lm(RCR ~ VWC))^2))
-    )
-
-  facet_labels <- stats_summary %>%
+  cat(paste0("\n=========================================\n"))
+  cat(paste0("  ", y, "年度のグラフ作成を開始します（修正版）\n"))
+  cat(paste0("=========================================\n"))
+  
+  poly_file    <- paste0(output_dir, "poly_regression_all_96patterns_", y, ".csv")
+  wetness_file <- paste0(output_dir, "soil_wetness_indicators_", y, ".csv")
+  
+  if (!file.exists(poly_file) || !file.exists(wetness_file)) {
+    warning(paste0("⚠️ データファイルが見つかりません (年度: ", y, ")"))
+    next
+  }
+  
+  df_r2_all <- read.csv(poly_file, stringsAsFactors = FALSE, fileEncoding = "CP932")
+  df_wetness_summary <- read.csv(wetness_file, stringsAsFactors = FALSE, fileEncoding = "CP932")
+  
+  # ---------------------------------------------------------
+  # 1. ヒートマップ (R²) の描画
+  # ---------------------------------------------------------
+  
+  df_r2_no40_45 <- df_r2_all %>%
+    filter(!閾値 %in% c("40", "45", "40%", "45%", "SMC_40", "SMC_45")) %>%
     mutate(
-      plot_label = sprintf("R² = %.2f\nRMSE = %.2f", r2, rmse),
-      x = min(df_long$VWC) + (max(df_long$VWC) - min(df_long$VWC)) * 0.05,
-      y = max(df_long$RCR) - (max(df_long$RCR) - min(df_long$RCR)) * 0.05
+      metric    = factor(評価指標, levels = metric_order),
+      threshold = factor(paste0(閾値, "%"), levels = c("20%", "25%", "30%", "35%")),
+      period    = 時期  # ★ ここで「時期」列を「period」列として明示的に作成
     )
-
-  custom_colors <- c("2025年6月30日"="#2b5c8f", "2025年7月7日"="#d95f02", "2025年7月13日"="#7570b3")
-
-  p_facet <- ggplot(df_long, aes(x = VWC, y = RCR, color = Date, fill = Date)) +
-    geom_point(size = 2.5, alpha = 0.7) +
-    geom_smooth(method = "lm", se = TRUE, alpha = 0.2, linewidth = 1) +
-    geom_text(data = facet_labels, aes(x = x, y = y, label = plot_label),
-              hjust = 0, vjust = 1, size = 5.5, fontface = "bold", color = "black", inherit.aes = FALSE) +
-    facet_wrap(~ Date, ncol = 1) +
-    scale_color_manual(values = custom_colors) +
-    scale_fill_manual(values = custom_colors) +
-    labs(x = "Volumetric Water Content (VWC)", y = "収穫時のRCRの割合") +
-    theme_bw(base_size = 14) +
-    theme(strip.text = element_text(face = "bold", size = 15), legend.position = "none")
-
-  ggsave("05_Poster_D1/RCR_vs_VWC_facet.png", plot = p_facet, width = 5.5, height = 9, dpi = 300)
-}
-
-# ---------------------------------------------------------
-# 図2. 水収支モデル精度 (1:1 散布図)
-# ---------------------------------------------------------
-if (file.exists("02_ModelOutputs/merged_SMC_4years.csv")) {
-  merged_data <- read.csv("02_ModelOutputs/merged_SMC_4years.csv", stringsAsFactors = FALSE)
-  merged_data$date <- as.Date(merged_data$date)
-  merged_data <- mutate(merged_data, year = as.character(format(date, "%Y")))
-
-  r2_val   <- sprintf("%.2f", cor(merged_data$SMC_obs, merged_data$SMC_pred, use = "complete.obs")^2)
-  rmse_val <- sprintf("%.3f", sqrt(mean((merged_data$SMC_obs - merged_data$SMC_pred)^2, na.rm = TRUE)))
-  label_text <- paste0("R² = ", r2_val, "\nRMSE = ", rmse_val)
-
-  p_1to1 <- ggplot(merged_data, aes(x = SMC_obs, y = SMC_pred, shape = year, color = year)) +
-    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray40", linewidth = 0.8) +
-    geom_point(size = 3.5, alpha = 0.8) +
-    scale_x_continuous(limits = c(0.0, 0.45), breaks = seq(0.0, 0.45, 0.1)) +
-    scale_y_continuous(limits = c(0.0, 0.45), breaks = seq(0.0, 0.45, 0.1)) +
-    coord_fixed(ratio = 1) +
-    annotate("text", x = 0.02, y = 0.42, label = label_text, hjust = 0, vjust = 1, size = 5, fontface = "bold") +
+  
+  max_r2 <- max(df_r2_no40_45$R2, na.rm = TRUE)
+  color_limit_max <- ifelse(is.na(max_r2) || max_r2 <= 0, 0.25, ceiling(max_r2 * 100) / 100)
+  
+  p_r2_heatmap_large_y <- ggplot(df_r2_no40_45, aes(x = metric, y = threshold, fill = R2)) +
+    geom_tile(color = "white", linewidth = 0.8) +
+    coord_fixed(ratio = 0.35) + 
+    geom_text(
+      aes(label = ifelse(is.na(R2), "-", sprintf("%.2f", R2))), 
+      color = "black", 
+      size = 4.8, 
+      fontface = "bold"
+    ) +
+    scale_fill_gradientn(
+      colors   = c("#ffffe5", "#fff7bc", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04"),
+      na.value = "gray90", 
+      limits   = c(0, color_limit_max),
+      breaks   = seq(0, color_limit_max, length.out = 5),
+      labels   = number_format(accuracy = 0.01)
+    ) +
+    facet_wrap(~ period, ncol = 2) +
     labs(
-      x = expression(bold("実測土壌水分量 SMC"[obs] ~ "(m"^3*"/m"^3*")")),
-      y = expression(bold("推定土壌水分量 SMC"[pred] ~ "(m"^3*"/m"^3*")")),
-      shape = "年度", color = "年度"
+      title = paste0(y, "年 全条件における2次多項式回帰の決定係数 (R²)"),
+      x     = "評価指標",
+      y     = "SMC 閾値 (%)",
+      fill  = "R²"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 18, hjust = 0.5, margin = margin(b = 10)),
+      strip.background = element_rect(fill = "gray90", color = "black"),
+      strip.text       = element_text(face = "bold", size = 14), 
+      axis.title.y     = element_text(face = "bold", size = 16),
+      axis.text.y      = element_text(size = 13, face = "bold", color = "black"),
+      axis.title.x     = element_text(face = "bold", size = 13),
+      axis.text.x      = element_text(angle = 25, hjust = 1, size = 10.5, face = "bold", color = "black"),
+      legend.title     = element_text(face = "bold", size = 11),
+      legend.text      = element_text(size = 9.5),
+      panel.grid       = element_blank()
+    )
+  
+  heatmap_out_path <- paste0(output_dir, "heatmap_R2_compact_large_y_", y, ".png")
+  ggsave(heatmap_out_path, plot = p_r2_heatmap_large_y, width = 12, height = 4.2, dpi = 300)
+  cat(paste0("  [1/2] ヒートマップ保存完了: ", heatmap_out_path, "\n"))
+  
+  # ---------------------------------------------------------
+  # 2. 最高 R² の条件による散布図描画
+  # ---------------------------------------------------------
+  
+  best_row <- df_r2_no40_45 %>%
+    filter(!is.na(R2)) %>%
+    arrange(desc(R2)) %>%
+    slice(1)
+  
+  if (nrow(best_row) == 0) next
+  
+  best_period   <- as.character(best_row$period)
+  best_th_str   <- paste0("SMC_", best_row$閾値)
+  best_m_label  <- as.character(best_row$評価指標)
+  best_col_name <- metrics_map[[best_m_label]]
+  
+  df_target <- df_wetness_summary %>%
+    filter(period == best_period, threshold == best_th_str) %>%
+    filter(!is.na(disease) & !is.na(.data[[best_col_name]]))
+  
+  fit_formula <- as.formula(paste("disease ~ poly(", best_col_name, ", 2, raw = TRUE)"))
+  fit_best    <- lm(fit_formula, data = df_target)
+  fit_sum     <- summary(fit_best)
+  
+  r2_val <- fit_sum$r.squared
+  adj_r2 <- fit_sum$adj.r.squared
+  f_stat <- fit_sum$fstatistic
+  p_val  <- if (!is.null(f_stat)) pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE) else NA
+  
+  p_text <- ifelse(is.na(p_val), "p = NA",
+            ifelse(p_val < 0.001, "p < 0.001", 
+            ifelse(p_val < 0.01,  "p < 0.01", 
+            ifelse(p_val < 0.05,  "p < 0.05", sprintf("p = %.3f", p_val)))))
+  
+  stat_label <- sprintf("R² = %.2f\nAdj. R² = %.2f\n%s", r2_val, adj_r2, p_text)
+  plot_title <- paste0(y, "年 最高精度モデル: 2次多項式 (", best_period, ", ", best_m_label, ", SMC ", best_row$閾値, "% 閾値)")
+  
+  p_best_plot_ultra_wide <- ggplot(df_target, aes(x = .data[[best_col_name]], y = disease)) +
+    geom_smooth(
+      method = "lm", formula = y ~ poly(x, 2, raw = TRUE), 
+      color = "#d95f02", fill = "#fdb462", alpha = 0.35, linewidth = 1.6
+    ) +
+    geom_point(color = "#2b8cbe", alpha = 0.75, size = 5.0) +
+    annotate(
+      "label", 
+      x = max(df_target[[best_col_name]], na.rm = TRUE) * 0.78, 
+      y = max(df_target$disease, na.rm = TRUE) * 0.82,
+      label = stat_label, fill = "white", color = "black", size = 6.0, fontface = "bold",
+      label.padding = unit(0.5, "lines"), linewidth = 0.8
+    ) +
+    labs(
+      title = plot_title,
+      x     = paste0(best_m_label, " (日/水分量/積算値)"),
+      y     = "病気発生率 RCR (%)"
     ) +
     theme_bw(base_size = 14) +
-    theme(legend.position = "bottom")
-
-  ggsave("04_Figures/SMC_1to1_plot.png", plot = p_1to1, width = 6, height = 6.5, dpi = 300)
-  ggsave("05_Poster_D1/SMC_1to1_plot_poster.png", plot = p_1to1, width = 6, height = 6.5, dpi = 300)
+    theme(
+      plot.title       = element_text(face = "bold", size = 20, hjust = 0.5, margin = margin(b = 12)),
+      axis.title       = element_text(face = "bold", size = 18),
+      axis.text        = element_text(size = 15, face = "bold", color = "black"),
+      panel.grid.minor = element_blank()
+    )
+  
+  scatter_out_path <- paste0(output_dir, "best_model_plot_ultrawide_", y, ".png")
+  ggsave(scatter_out_path, plot = p_best_plot_ultra_wide, width = 14, height = 3.8, dpi = 300)
+  cat(paste0("  [2/2] 散布図保存完了: ", scatter_out_path, "\n"))
 }
 
-cat("✅ ポスター用高解像度画像の出力が完了しました: 04_Figures/ および 05_Poster_D1/\n")
+cat("\n🎉 お待たせしました！エラーなく2024年・2025年の全4枚の出力が完了しました！\n")
