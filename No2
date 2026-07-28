@@ -1,0 +1,65 @@
+setwd("C:/Users/koike/OneDrive/Desktop/Water2")
+
+# =========================================================
+# 01_weather_processing.R
+# 気象データの読み込みおよびETp（可能蒸発散量）の計算
+# =========================================================
+
+# 1. 全天日射量 (GSR: MJ/m2/day) 推定関数
+calc_solar_rad <- function(doy, lat_deg, sunshine_hours) {
+  phi <- lat_deg * pi / 180
+  dr  <- 1 + 0.033 * cos(2 * pi * doy / 365)
+  delta <- 0.409 * sin(2 * pi * doy / 365 - 1.39)
+  
+  ws <- acos(-tan(phi) * tan(delta))
+  Gsc <- 0.0820
+  Ra  <- (24 * 60 / pi) * Gsc * dr * (ws * sin(phi) * sin(delta) + cos(phi) * cos(delta) * sin(ws))
+  
+  N <- (24 / pi) * ws
+  n_N <- sunshine_hours / N
+  n_N <- pmin(pmax(n_N, 0), 1)  # 0〜1の範囲に収める
+  
+  Rs <- Ra * (0.25 + 0.50 * n_N)
+  return(Rs)
+}
+
+# 2. アメダス raw データの読み込み
+data_raw <- read.csv(
+  "00_RawData/Amedas.csv",
+  fileEncoding = "CP932",
+  header = TRUE,
+  stringsAsFactors = FALSE
+)
+
+# 3. 気象要素・ETpの計算処理 (仙台周辺: 緯度38.26度を想定)
+lat_deg <- 38.26 
+df_weather <- data_raw
+
+df_weather$date <- as.Date(df_weather$Date, format = "%Y/%m/%d")
+df_weather$doy  <- as.numeric(format(df_weather$date, "%j"))
+
+# GSR 推定
+df_weather$GSR <- calc_solar_rad(
+  doy            = df_weather$doy,
+  lat_deg        = lat_deg,
+  sunshine_hours = df_weather$Sun
+)
+
+# 飽和水蒸気圧曲線の斜率 s (kPa/℃)
+df_weather$s <- 4098 * (0.6108 * exp((17.27 * df_weather$Temp) / (df_weather$Temp + 237.3))) / 
+                ((df_weather$Temp + 237.3)^2)
+
+# 純放射量 Rn (mm/day)
+df_weather$Rn_mm <- (df_weather$GSR * 0.6) / 2.45
+
+# Priestley-Taylor 式による ETp 計算
+gamma <- 0.066
+df_weather$et_p <- 1.26 * (df_weather$s / (df_weather$s + gamma)) * df_weather$Rn_mm
+
+# モデルに必要な列だけに絞り込み
+df_weather <- df_weather[, c("date", "Rain", "et_p")]
+colnames(df_weather) <- c("date", "rain", "et_p")
+
+# 4. 整形済み気象データの保存
+write.csv(df_weather, file = "01_ProcessedData/df_weather_cleaned.csv", row.names = FALSE)
+cat("✅ 気象データの整形・ETp計算が完了しました: 01_ProcessedData/df_weather_cleaned.csv\n")
