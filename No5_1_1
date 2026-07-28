@@ -142,12 +142,11 @@ mapply(
 )
 
 head(seed_est[,c(
-"site",
-"year",
-"seeding_GDD",
-"seeding_GDD_adj",
-"seeding_date"
-)
+    "site",
+    "year",
+    "seeding_GDD",
+    "seeding_date"
+)])
 #==========================================================
 # disease結合
 #==========================================================
