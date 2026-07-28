@@ -12,11 +12,11 @@ if (!dir.exists(base_dir)) {
 
 # 作成するフォルダのリスト
 dirs <- c(
-  "00_RawData",          # 一次データ（生データ）
-  "01_ProcessedData",    # 整形済み二次データ
-  "02_ModelOutputs",     # シミュレーション・最適化結果
-  "03_AnalysisOutputs",  # 統計解析結果
-  "04_Figures",          # 出力画像・PDF
+  "00_RawData",          # 一次データ（生データ）#inアメダスデータ、実測VWC、生育ステージ
+  "01_ProcessedData",    # 整形済み二次データ #in気象・ETp計算済みデータ、4年分統合実測データ、ステージ予測データ
+  "02_ModelOutputs",     # シミュレーション・最適化結果 #inパラメータ最適化、4年分全日推定データ、実測と推定の結合
+  "03_AnalysisOutputs",  # 統計解析結果 #in帯水指標集計データ、回帰分析の結果
+  "04_Figures",          # 出力画像・PDF #in精度評価散布図、回帰プロット
   "05_Poster_D1",        # ポスター発表用資材
   "Scripts"              # Rスクリプト格納場所
 )
