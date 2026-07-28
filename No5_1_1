@@ -87,14 +87,6 @@ summarise(
 # 8.5 負の播種GDDを補正
 #==========================================================
 
-seed_est <- seed_est %>%
-    mutate(
-        seeding_date =
-            as.Date(
-                seeding_date,
-                origin="1970-01-01"
-            )
-    )
 #==========================================================
 # 9. 播種GDD → 播種日へ変換
 #==========================================================
@@ -120,6 +112,17 @@ mapply(
     find_date_from_gdd,
     seed_est$seeding_GDD,
     seed_est$year
+)
+
+seed_est$seeding_date <-
+
+as.Date(
+    mapply(
+        find_date_from_gdd,
+        seed_est$seeding_GDD,
+        seed_est$year
+    ),
+    origin="1970-01-01"
 )
 
 #==========================================================
