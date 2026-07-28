@@ -1,0 +1,37 @@
+# =========================================================
+# 水収支モデルの定義関数 (※追加が必要な部分)
+# =========================================================
+
+# 1. 気象データから有効水分量 Aw (mm) を日次計算する関数
+simulate_water <- function(df_weather, a = 0.5, AWHC = 40.0) {
+  # 日付順にソート
+  df <- df_weather[order(df_weather$date), ]
+  n <- nrow(df)
+  
+  Aw <- numeric(n)
+  Aw[1] <- AWHC * 0.5  # 初期値 (AWHCの50%と仮定)
+  
+  for (t in 2:n) {
+    rain <- df$rain[t]
+    et_p <- df$et_p[t]
+    
+    # 実際の蒸散量 (ETa)
+    et_a <- et_p * a * (Aw[t-1] / AWHC)
+    
+    # 水分収支の更新
+    Aw_temp <- Aw[t-1] + rain - et_a
+    
+    # 0 <= Aw <= AWHC の範囲に制限
+    Aw[t] <- pmin(pmax(Aw_temp, 0), AWHC)
+  }
+  
+  df$Aw <- Aw
+  return(df)
+}
+
+# 2. 有効水分量 Aw から 土壌水分量 SMC (m3/m3) を計算する関数
+calc_SMC <- function(Aw, Sd, SMC0) {
+  # Aw (mm) / Sd (mm) + 初期/残存水分 SMC0
+  smc <- (Aw / Sd) + SMC0
+  return(smc)
+}
