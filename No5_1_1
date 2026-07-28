@@ -68,7 +68,7 @@ stage_threshold <-
 
 print(stage_threshold)
 #==========================================================
-# 8. 実測データから播種GDDを推定（安定版）
+# 8. 実測データから播種GDDを推定
 #==========================================================
 
 seed_est <-
@@ -83,64 +83,35 @@ do({
 
     fit <- lm(stage ~ cumGDD, data=.)
 
-
     a <- coef(fit)[1]
     b <- coef(fit)[2]
 
-    R2 <- summary(fit)$r.squared
+    V2_GDD <- (2-a)/b
 
+    seedGDD <- V2_GDD - 583
 
-    # 傾き異常を除外
-    if(
-        is.na(b) |
-        abs(b) < 0.005 |
-        R2 < 0.8 |
-        nrow(.) < 3
-    ){
-
-        tibble(
-            seeding_GDD = NA,
-            V2_GDD = NA,
-            slope=b,
-            intercept=a,
-            R2=R2,
-            n_obs=nrow(.)
-        )
-
-    }else{
-
-
-        V2_GDD <- (2-a)/b
-
-        seedGDD <- V2_GDD - 583
-
-
-        tibble(
-
-            seeding_GDD = seedGDD,
-
-            V2_GDD = V2_GDD,
-
-            slope=b,
-
-            intercept=a,
-
-            R2=R2,
-
-            n_obs=nrow(.)
-
-        )
-
-    }
+    tibble(
+        seeding_GDD = seedGDD,
+        V2_GDD = V2_GDD,
+        slope=b,
+        intercept=a,
+        R2=summary(fit)$r.squared,
+        n_obs=nrow(.)
+    )
 
 }) %>%
 
 ungroup()
 
+
+
+#==========================================================
+# 8.5 負の播種GDDを補正
+#==========================================================
+
 seed_est <- seed_est %>%
-    
     mutate(
-        seeding_GDD =
+        seeding_GDD_adj =
             ifelse(
                 seeding_GDD < 0,
                 0,
@@ -166,21 +137,21 @@ find_date_from_gdd <- function(targetGDD, yr){
 
 }
 
-
 seed_est$seeding_date <-
 
     mapply(
         find_date_from_gdd,
-        seed_est$seeding_GDD,
+        seed_est$seeding_GDD_adj,
         seed_est$year
     )
 #==========================================================
-# 10. disease結合
+# disease結合
 #==========================================================
 
 if(length(list_disease)>0){
 
-    disease_all <- bind_rows(list_disease)
+    disease_all <- bind_rows(list_disease) %>%
+        distinct(site,year,.keep_all=TRUE)
 
 
     seed_est <-
