@@ -48,28 +48,6 @@ stage_threshold <-
 print(stage_threshold)
 
 #==========================================================
-# V2到達までの必要GDD推定
-#==========================================================
-
-V2_GDD_required <-
-
-stage_all %>%
-    
-    filter(stage==2) %>%
-    
-    summarise(
-        
-        V2_required =
-            median(cumGDD - 
-                   min(cumGDD),
-                   na.rm=TRUE)
-        
-    )
-
-
-print(V2_GDD_required)
-
-#==========================================================
 # 8. 実測Stageから播種GDDを推定
 #==========================================================
 
@@ -110,10 +88,13 @@ summarise(
 #==========================================================
 
 seed_est <- seed_est %>%
-mutate(
-    seeding_GDD =
-        pmax(seeding_GDD,0)
-)
+    mutate(
+        seeding_date =
+            as.Date(
+                seeding_date,
+                origin="1970-01-01"
+            )
+    )
 #==========================================================
 # 9. 播種GDD → 播種日へ変換
 #==========================================================
@@ -141,12 +122,6 @@ mapply(
     seed_est$year
 )
 
-head(seed_est[,c(
-    "site",
-    "year",
-    "seeding_GDD",
-    "seeding_date"
-)])
 #==========================================================
 # disease結合
 #==========================================================
@@ -174,7 +149,7 @@ write.csv(
 
 crop_stage,
 
-"01_ProcessedData/crop_stages_predicted_GDD.csv",
+"01_ProcessedData/seeding_date_estimated_GDD.csv.csv",
 
 row.names=FALSE,
 
