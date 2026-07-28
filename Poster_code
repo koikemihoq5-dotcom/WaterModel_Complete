@@ -458,4 +458,156 @@ ggsave(
   dpi = 300
 )
 
+# =========================================================
+# 06_compare_rel90_distribution.R
+# 2024年と2025年の Rel_90% における過湿指標の分布比較
+# =========================================================
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+output_dir <- "03_AnalysisOutputs/"
+
+# 1. 2年分の相対閾値データを読み込んで結合
+df_2024 <- read.csv(paste0(output_dir, "soil_wetness_indicators_relative_2024.csv"), stringsAsFactors = FALSE, fileEncoding = "CP932") %>% mutate(year = "2024年")
+df_2025 <- read.csv(paste0(output_dir, "soil_wetness_indicators_relative_2025.csv"), stringsAsFactors = FALSE, fileEncoding = "CP932") %>% mutate(year = "2025年")
+
+df_rel90 <- bind_rows(df_2024, df_2025) %>%
+  filter(threshold == "Rel_90%")
+
+# ---------------------------------------------------------
+# A. 年次別の基本統計量（サマリーテーブル）の作成
+# ---------------------------------------------------------
+summary_table <- df_rel90 %>%
+  group_by(year, period) %>%
+  summarise(
+    地点数          = n(),
+    合計過湿日数_平均 = round(mean(total_wet_days, na.rm = TRUE), 2),
+    合計過湿日数_最大 = max(total_wet_days, na.rm = TRUE),
+    連続過湿日数_平均 = round(mean(max_cont_wet_days, na.rm = TRUE), 2),
+    過湿強度積算_平均 = round(mean(excess_smc_sum, na.rm = TRUE), 2),
+    病気発生率_平均   = round(mean(disease, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+write.csv(summary_table, paste0(output_dir, "rel90_distribution_summary_2024_2025.csv"), row.names = FALSE, fileEncoding = "CP932")
+cat("✅ 統計サマリーテーブルを出力しました: rel90_distribution_summary_2024_2025.csv\n")
+
+# ---------------------------------------------------------
+# B. 分布比較グラフ（箱ひげ図＋ジッター散布図）の作成
+# ---------------------------------------------------------
+# ロングフォーマットに変換して作図しやすくする
+df_long <- df_rel90 %>%
+  select(year, site, period, total_wet_days, max_cont_wet_days, excess_smc_sum) %>%
+  pivot_longer(
+    cols = c(total_wet_days, max_cont_wet_days, excess_smc_sum),
+    names_to = "indicator",
+    values_to = "value"
+  ) %>%
+  mutate(
+    indicator_label = case_when(
+      indicator == "total_wet_days"    ~ "合計の過湿日数 (日)",
+      indicator == "max_cont_wet_days" ~ "連続過湿日数 (日)",
+      indicator == "excess_smc_sum"    ~ "過湿の強さ×日数 (積算値)"
+    )
+  )
+
+p_box <- ggplot(df_long, aes(x = year, y = value, fill = year)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA, color = "black") +
+  geom_jitter(width = 0.15, alpha = 0.7, size = 2.5, aes(color = year)) +
+  facet_grid(indicator_label ~ period, scales = "free_y") +
+  scale_fill_manual(values = c("2024年" = "#3182bd", "2025年" = "#de2d26")) +
+  scale_color_manual(values = c("2024年" = "#08519c", "2025年" = "#a50f15")) +
+  labs(
+    title = "2024年 vs 2025年：Rel_90%（上位10%過湿）における各指標の分布比較",
+    subtitle = "※2024年と2025年で過湿イベントの発生日数や強度にどのような違いがあるか",
+    x = "年度",
+    y = "指標の値"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle    = element_text(size = 11, hjust = 0.5, margin = margin(b = 10)),
+    strip.background = element_rect(fill = "gray90", color = "black"),
+    strip.text       = element_text(face = "bold", size = 11),
+    axis.title       = element_text(face = "bold", size = 13),
+    axis.text        = element_text(size = 11, face = "bold", color = "black"),
+    legend.position  = "none"
+  )
+
+ggsave(paste0(output_dir, "rel90_distribution_comparison_2024_2025.png"), plot = p_box, width = 13, height = 8, dpi = 300)
+cat("✅ 比較グラフを出力しました: rel90_distribution_comparison_2024_2025.png\n")
+
+# =========================================================
+# 07_compare_disease_RCR_2024_2025.R
+# 箱ひげ図
+# 2024年と2025年の病気発生率(RCR)の単純比較
+# =========================================================
+
+library(dplyr)
+library(ggplot2)
+
+output_dir <- "03_AnalysisOutputs/"
+
+# 1. データ読み込み（病気発生率データ）
+# （すでに集計済みのファイルから病気発生率を取得）
+df_2024 <- read.csv(paste0(output_dir, "soil_wetness_indicators_relative_2024.csv"), stringsAsFactors = FALSE, fileEncoding = "CP932") %>%
+  select(site, disease) %>%
+  distinct() %>%
+  mutate(year = "2024年")
+
+df_2025 <- read.csv(paste0(output_dir, "soil_wetness_indicators_relative_2025.csv"), stringsAsFactors = FALSE, fileEncoding = "CP932") %>%
+  select(site, disease) %>%
+  distinct() %>%
+  mutate(year = "2025年")
+
+df_disease_all <- bind_rows(df_2024, df_2025) %>%
+  filter(!is.na(disease))
+
+# ---------------------------------------------------------
+# A. 基本統計量（サマリーテーブル）の出力
+# ---------------------------------------------------------
+disease_summary <- df_disease_all %>%
+  group_by(year) %>%
+  summarise(
+    地点数     = n(),
+    RCR_平均値 = round(mean(disease), 2),
+    RCR_中央値 = round(median(disease), 2),
+    RCR_最小値 = round(min(disease), 2),
+    RCR_最大値 = round(max(disease), 2),
+    RCR_標準偏差 = round(sd(disease), 2),
+    .groups = "drop"
+  )
+
+write.csv(disease_summary, paste0(output_dir, "disease_RCR_summary_2024_2025.csv"), row.names = FALSE, fileEncoding = "CP932")
+cat("✅ 病害発生率の統計サマリーを出力しました: disease_RCR_summary_2024_2025.csv\n")
+
+# ---------------------------------------------------------
+# B. 箱ひげ図（ジッター散布図つき）の描画
+# ---------------------------------------------------------
+p_disease <- ggplot(df_disease_all, aes(x = year, y = disease, fill = year)) +
+  geom_boxplot(alpha = 0.5, outlier.shape = NA, color = "black", linewidth = 0.8) +
+  geom_jitter(aes(color = year), width = 0.12, alpha = 0.8, size = 3.5) +
+  scale_fill_manual(values  = c("2024年" = "#3182bd", "2025年" = "#de2d26")) +
+  scale_color_manual(values = c("2024年" = "#08519c", "2025年" = "#a50f15")) +
+  labs(
+    title    = "2024年 vs 2025年：病気発生率 RCR (%) の分布比較",
+    subtitle = "※年度ごとの病害発生レベルの全体像と地点間ばらつきの検証",
+    x        = "年度",
+    y        = "病気発生率 RCR (%)"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title      = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle   = element_text(size = 12, hjust = 0.5, margin = margin(b = 12)),
+    axis.title      = element_text(face = "bold", size = 15),
+    axis.text       = element_text(size = 13, face = "bold", color = "black"),
+    legend.position = "none",
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(paste0(output_dir, "disease_RCR_comparison_2024_2025.png"), plot = p_disease, width = 7, height = 6, dpi = 300)
+cat("✅ 病害比較グラフを出力しました: disease_RCR_comparison_2024_2025.png\n")
+
 cat("\n【出力完了】タイトルとY軸文字を大きくした画像を保存しました！\n")
