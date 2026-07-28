@@ -1,0 +1,84 @@
+# =========================================================
+# 03_water_balance_model.R
+# 水収支モデルのパラメータ最適化、連続推定、および精度評価
+# =========================================================
+
+library(dplyr)
+library(lubridate)
+
+# 1. 前処理データの読み込み
+df_weather <- read.csv("01_ProcessedData/df_weather_cleaned.csv", stringsAsFactors = FALSE)
+df_weather$date <- as.Date(df_weather$date)
+
+SMC_all <- read.csv("01_ProcessedData/SMC_all.csv", stringsAsFactors = FALSE)
+SMC_all$date <- as.Date(SMC_all$date)
+
+# ※ 注意: 外部定義されている前提のモデル関数（環境に応じて調整してください）
+# simulate_water(df_weather, a, AWHC)
+# calc_SMC(Aw, Sd, SMC0)
+
+# 2. 安定版最適化関数の定義
+estimate_parameters_stable <- function(df_weather, df_obs_smc, 
+                                        fixed_a = 0.5, fixed_AWHC = 40.0,
+                                        init_params = c(Sd = 200, SMC0 = 0.05)) {
+  objective_func <- function(params) {
+    Sd   <- params[1]
+    SMC0 <- params[2]
+    
+    if (Sd < 50 || Sd > 500 || SMC0 < 0 || SMC0 > 0.4) return(1e9)
+    
+    sim_res <- simulate_water(df_weather, a = fixed_a, AWHC = fixed_AWHC)
+    sim_res$SMC_pred <- calc_SMC(sim_res$Aw, Sd = Sd, SMC0 = SMC0)
+    
+    merged <- merge(df_obs_smc, sim_res, by = "date")
+    if (nrow(merged) == 0) return(1e9)
+    
+    return(sum((merged$SMC_obs - merged$SMC_pred)^2, na.rm = TRUE))
+  }
+  
+  opt <- optim(par = init_params, fn = objective_func, method = "Nelder-Mead")
+  names(opt$par) <- c("Sd", "SMC0")
+  return(opt)
+}
+
+# 3. 地点別パラメータ最適化ループ
+sites <- unique(SMC_all$site)
+summary_params <- data.frame()
+
+for (s in sites) {
+  df_obs_site <- subset(SMC_all, site == s)
+  opt_out <- estimate_parameters_stable(
+    df_weather = df_weather, df_obs_smc = df_obs_site,
+    fixed_a = 0.5, fixed_AWHC = 40.0, init_params = c(Sd = 200, SMC0 = 0.05)
+  )
+  pars <- opt_out$par
+  summary_params <- rbind(summary_params, data.frame(
+    site = s, a = 0.5, AWHC = 40.0, Sd = pars["Sd"], SMC0 = pars["SMC0"], SSR = opt_out$value
+  ))
+}
+
+write.csv(summary_params, "02_ModelOutputs/optimization_results_all.csv", row.names = FALSE, fileEncoding = "CP932")
+
+# 4. 栽培期間（6/1〜9/30）の全日連続推定
+df_weather_season <- df_weather %>%
+  filter(month(date) %in% 6:9 & year(date) %in% 2023:2026)
+
+df_pred_4years_all <- data.frame()
+
+for (s in sites) {
+  pars_target <- subset(summary_params, site == s)
+  if (nrow(pars_target) > 0) {
+    sim_full <- simulate_water(df_weather_season, a = pars_target$a, AWHC = pars_target$AWHC)
+    sim_full$SMC_pred <- calc_SMC(sim_full$Aw, Sd = pars_target$Sd, SMC0 = pars_target$SMC0)
+    sim_full$site <- s
+    df_pred_4years_all <- rbind(df_pred_4years_all, sim_full[, c("date", "site", "rain", "et_p", "SMC_pred")])
+  }
+}
+
+write.csv(df_pred_4years_all, "02_ModelOutputs/soil_moisture_pred_4years_full.csv", row.names = FALSE, fileEncoding = "CP932")
+
+# 5. 実測と推定データの結合ファイル出力（評価用）
+merged_data <- inner_join(SMC_all, df_pred_4years_all, by = c("date", "site"))
+write.csv(merged_data, "02_ModelOutputs/merged_SMC_all.csv", row.names = FALSE, fileEncoding = "CP932")
+
+cat("✅ モデル最適化と推定結果の保存が完了しました: 02_ModelOutputs/\n")
