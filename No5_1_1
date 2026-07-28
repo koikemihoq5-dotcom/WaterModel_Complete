@@ -71,51 +71,44 @@ seed_est <-
 
 stage_all %>%
 
-mutate(
-
-stageGDD =
-case_when(
-
-stage == 2 ~ 580,
-stage == 3 ~ 570,
-stage == 4 ~ 660,
-stage == 5 ~ 650,
-stage == 6 ~ 675,
-stage == 7 ~ 687,
-stage == 8 ~ 760,
-stage == 9 ~ 786,
-stage == 10 ~ 850,
-stage == 11 ~ 860,
-stage >=12 ~ 920
-
-),
-
-seedGDD =
-cumGDD - stageGDD
-
+filter(
+    !is.na(cumGDD),
+    !is.na(stage)
 ) %>%
-
-filter(!is.na(seedGDD)) %>%
 
 group_by(site,year) %>%
 
-summarise(
+do({
 
-seeding_GDD =
-mean(seedGDD,na.rm=TRUE),
-
-sd_seedGDD =
-sd(seedGDD,na.rm=TRUE),
-
-n_obs=n(),
-
-.groups="drop"
-
-)
+    fit <- lm(stage ~ cumGDD, data=.)
 
 
-print(seed_est)
+    # stage=0 の時のGDD
+    seedGDD <- 
+        -coef(fit)[1] / coef(fit)[2]
 
+
+    tibble(
+
+        seeding_GDD = seedGDD,
+
+        slope = coef(fit)[2],
+
+        intercept = coef(fit)[1],
+
+        R2 = summary(fit)$r.squared,
+
+        n_obs=nrow(.)
+
+
+    )
+
+}) %>%
+
+ungroup()
+
+
+print(head(seed_est))
 
 
 #==========================================================
@@ -125,35 +118,22 @@ print(seed_est)
 find_date_from_gdd <- function(targetGDD, yr){
 
     w <- weather %>%
-        filter(year == yr)
+        filter(year==yr)
 
     idx <- which.min(
-        abs(w$cumGDD - targetGDD)
+        abs(w$cumGDD-targetGDD)
     )
 
     w$date[idx]
 
 }
 
-
-crop_stage <-
-
-seed_est %>%
-
-mutate(
-
-seeding_date =
-
-as.Date(
+seed_est$seeding_date <-
 
 mapply(
-
-find_date_from_gdd,
-
-seeding_GDD,
-
-year
-
+    find_date_from_gdd,
+    seed_est$seeding_GDD,
+    seed_est$year
 ),
 
 origin="1970-01-01"
