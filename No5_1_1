@@ -86,7 +86,11 @@ summarise(
 #==========================================================
 # 8.5 負の播種GDDを補正
 #==========================================================
-
+seed_est <- seed_est %>%
+    mutate(
+        seeding_GDD =
+            pmax(seeding_GDD,0)
+    )
 #==========================================================
 # 9. 播種GDD → 播種日へ変換
 #==========================================================
@@ -105,14 +109,6 @@ find_date_from_gdd <- function(targetGDD, yr){
     w$date[idx]
 
 }
-
-seed_est$seeding_date <-
-
-mapply(
-    find_date_from_gdd,
-    seed_est$seeding_GDD,
-    seed_est$year
-)
 
 seed_est$seeding_date <-
 
@@ -150,9 +146,9 @@ if(length(list_disease)>0){
 
 write.csv(
 
-crop_stage,
+seed_est,
 
-"01_ProcessedData/seeding_date_estimated_GDD.csv.csv",
+"01_ProcessedData/seeding_date_estimated_GDD.csv",
 
 row.names=FALSE,
 
