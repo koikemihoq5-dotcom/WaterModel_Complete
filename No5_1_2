@@ -1,0 +1,122 @@
+#==========================================================
+# 12. 播種日からV2,V5,R1到達日を推定
+#==========================================================
+
+# ステージ到達に必要なGDD
+# stage 2 = V2
+# stage 6 = V5
+# stage 10 = R1
+
+V2_required_GDD <- 583
+V5_required_GDD <- 675
+R1_required_GDD <- 850
+
+
+# GDD → 日付変換関数
+find_date_from_gdd <- function(targetGDD, yr){
+
+    w <- weather %>%
+        filter(year == yr)
+
+    idx <- which.min(
+        abs(w$cumGDD - targetGDD)
+    )
+
+    w$date[idx]
+
+}
+
+
+#----------------------------------------------------------
+# ステージ日推定
+#----------------------------------------------------------
+
+crop_stage_predicted <-
+
+seed_est %>%
+
+mutate(
+
+    # 播種日
+    pred_seeding_date =
+        as.Date(seeding_date),
+
+
+    # 到達GDD
+    V2_target_GDD =
+        seeding_GDD + V2_required_GDD,
+
+    V5_target_GDD =
+        seeding_GDD + V5_required_GDD,
+
+    R1_target_GDD =
+        seeding_GDD + R1_required_GDD
+
+) %>%
+
+
+rowwise() %>%
+
+mutate(
+
+    v2_date =
+        find_date_from_gdd(
+            V2_target_GDD,
+            year
+        ),
+
+
+    v5_date =
+        find_date_from_gdd(
+            V5_target_GDD,
+            year
+        ),
+
+
+    r1_date =
+        find_date_from_gdd(
+            R1_target_GDD,
+            year
+        )
+
+) %>%
+
+ungroup()
+
+
+#----------------------------------------------------------
+# 必要列だけ保存
+#----------------------------------------------------------
+
+crop_stages_predicted <-
+
+crop_stage_predicted %>%
+
+select(
+    site,
+    year,
+    pred_seeding_date,
+    v2_date,
+    v5_date,
+    r1_date,
+    disease
+)
+
+
+print(head(crop_stages_predicted))
+
+
+write.csv(
+
+    crop_stages_predicted,
+
+    "01_ProcessedData/crop_stages_predicted.csv",
+
+    row.names = FALSE,
+
+    fileEncoding="CP932"
+
+)
+
+
+cat("\n播種-V2-V5-R1推定完了\n")
