@@ -82,3 +82,154 @@ merged_data <- inner_join(SMC_all, df_pred_4years_all, by = c("date", "site"))
 write.csv(merged_data, "02_ModelOutputs/merged_SMC_all.csv", row.names = FALSE, fileEncoding = "CP932")
 
 cat("✅ モデル最適化と推定結果の保存が完了しました: 02_ModelOutputs/\n")
+
+# =========================================================
+# 6. 視覚化処理（散布図 ＆ 年度別時系列グラフ）
+# =========================================================
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+# 出力先フォルダの作成
+dir.create("03_Plots", showWarnings = FALSE)
+
+# ---------------------------------------------------------
+# 6-1. 実測 vs 推定 散布図の描画
+# ---------------------------------------------------------
+
+# 精度指標（R² および RMSE）の計算
+merged_clean <- na.omit(merged_data[, c("SMC_obs", "SMC_pred")])
+r2_val   <- cor(merged_clean$SMC_obs, merged_clean$SMC_pred)^2
+rmse_val <- sqrt(mean((merged_clean$SMC_obs - merged_clean$SMC_pred)^2))
+
+# グラフ上のテキスト表記
+metrics_text <- paste0("R² = ", sprintf("%.2f", r2_val), "\nRMSE = ", sprintf("%.3f", rmse_val))
+
+# 年度（factor化）の作成
+merged_data$year_factor <- factor(year(merged_data$date))
+
+p_scatter <- ggplot(merged_data, aes(x = SMC_obs, y = SMC_pred)) +
+  geom_point(aes(color = year_factor, shape = year_factor), size = 2.5, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray40") +
+  annotate("text", x = 0.02, y = 0.42, label = metrics_text, 
+           hjust = 0, vjust = 1, size = 5, fontface = "bold") +
+  scale_x_continuous(limits = c(-0.02, 0.45), breaks = seq(0, 0.4, 0.1)) +
+  scale_y_continuous(limits = c(-0.02, 0.45), breaks = seq(0, 0.4, 0.1)) +
+  labs(
+    x = "実測土壌体積含水量 (SMC)",
+    y = "推定土壌体積含水量 (SMC)",
+    color = "年",
+    shape = "年"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    panel.grid.minor = element_line(linetype = "dotted"),
+    legend.position = c(0.85, 0.25),
+    legend.background = element_rect(color = "black", fill = "white"),
+    axis.title = element_text(face = "bold")
+  )
+
+# 散布図の保存
+ggsave("03_Plots/SMC_Scatter_Plot.png", p_scatter, width = 6, height = 6, dpi = 300)
+
+
+# ---------------------------------------------------------
+# 6-2. 年度別時系列・降水量2軸グラフ (全区画平均 ± 標準偏差)
+# ---------------------------------------------------------
+
+# データに含まれる「年」の一覧を動的に取得
+available_years <- sort(unique(year(df_pred_4years_all$date)))
+
+# 右軸（降水量）のスケール調整用の係数
+precip_max <- max(df_weather$rain, na.rm = TRUE)
+smc_max    <- 0.35
+scale_factor <- precip_max / smc_max
+
+for (y in available_years) {
+  
+  # 1. 推定データの1日ごとの平均と標準偏差（SD）を集計
+  pred_y_summary <- df_pred_4years_all %>%
+    filter(year(date) == y) %>%
+    group_by(date) %>%
+    summarize(
+      SMC_pred_mean = mean(SMC_pred, na.rm = TRUE),
+      SMC_pred_sd   = sd(SMC_pred, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      ymin = pmax(0, SMC_pred_mean - SMC_pred_sd), # 下限（0未満にならないよう制限）
+      ymax = SMC_pred_mean + SMC_pred_sd
+    )
+  
+  # 2. 実測データの1日ごとの平均を集計
+  obs_y_summary <- SMC_all %>%
+    filter(year(date) == y) %>%
+    group_by(date) %>%
+    summarize(
+      SMC_obs_mean = mean(SMC_obs, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # 3. 降水量データの抽出
+  rain_y <- df_weather %>% filter(year(date) == y & month(date) %in% 6:9)
+  
+  p_time <- ggplot() +
+    # 降水量（棒グラフ：青色半透明、右軸スケールに変換）
+    geom_bar(data = rain_y, aes(x = date, y = rain / scale_factor, fill = "日降水量"), 
+             stat = "identity", width = 0.8, alpha = 0.3) +
+    
+    # 推定SMCの区画間バラつき（±1SDのシェード領域）
+    geom_ribbon(data = pred_y_summary, aes(x = date, ymin = ymin, ymax = ymax, fill = "推定SMC (±SD)"), 
+                alpha = 0.25) +
+    
+    # 推定SMCの全区画平均（青色の折れ線）
+    geom_line(data = pred_y_summary, aes(x = date, y = SMC_pred_mean, color = "推定SMC (平均)"), 
+              linewidth = 1) +
+    
+    # 実測SMCの全区画平均（赤色の点）
+    geom_point(data = obs_y_summary, aes(x = date, y = SMC_obs_mean, color = "実測SMC (平均)"), 
+               size = 3) +
+    
+    # 軸・スケール設定（第2軸を配置）
+    scale_y_continuous(
+      name = expression(bold(paste("SMC (m"^3, "/m"^3, ")"))),
+      limits = c(0, smc_max),
+      sec.axis = sec_axis(~ . * scale_factor, name = "降水量 (mm)")
+    ) +
+    scale_x_date(
+      date_labels = "%m/%d",
+      date_breaks = "15 days"
+    ) +
+    
+    # 凡例の色設定
+    scale_color_manual(
+      name = "", 
+      values = c("推定SMC (平均)" = "#1F78B4", "実測SMC (平均)" = "#E31A1C")
+    ) +
+    scale_fill_manual(
+      name = "", 
+      values = c("推定SMC (±SD)" = "#1F78B4", "日降水量" = "#A6CEE3")
+    ) +
+    
+    labs(
+      title = paste0(y, "年 SMCおよび降水量"),
+      x = paste0("日付 (", y, "年)")
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      axis.title.x = element_text(face = "bold"),
+      axis.title.y.left = element_text(color = "#1F78B4", face = "bold"),
+      axis.title.y.right = element_text(color = "#1F78B4", face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      panel.grid.minor = element_line(linetype = "dotted")
+    )
+  
+  # 年度別画像の保存
+  ggsave(paste0("03_Plots/SMC_TimeSeries_", y, ".png"), p_time, width = 6, height = 7, dpi = 300)
+}
+
+cat("✅ 散布図および平均化後の各年度グラフ保存が完了しました: 03_Plots/\n")
