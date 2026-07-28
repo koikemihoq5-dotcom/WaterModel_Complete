@@ -1,0 +1,36 @@
+# =========================================================
+# プロジェクト用フォルダ一括作成スクリプト
+# =========================================================
+
+# ベースフォルダ
+base_dir <- "C:/Users/koike/OneDrive/Desktop/Water2"
+
+# Water2フォルダが存在しなければ作成
+if (!dir.exists(base_dir)) {
+  dir.create(base_dir, recursive = TRUE)
+}
+
+# 作成するフォルダのリスト
+dirs <- c(
+  "00_RawData",          # 一次データ（生データ）
+  "01_ProcessedData",    # 整形済み二次データ
+  "02_ModelOutputs",     # シミュレーション・最適化結果
+  "03_AnalysisOutputs",  # 統計解析結果
+  "04_Figures",          # 出力画像・PDF
+  "05_Poster_D1",        # ポスター発表用資材
+  "Scripts"              # Rスクリプト格納場所
+)
+
+# フォルダ作成
+for (d in dirs) {
+  folder_path <- file.path(base_dir, d)
+
+  if (!dir.exists(folder_path)) {
+    dir.create(folder_path, recursive = TRUE)
+    cat("作成しました:", folder_path, "\n")
+  } else {
+    cat("既に存在します:", folder_path, "\n")
+  }
+}
+
+cat("\n🎉 フォルダ構成の作成が完了しました！\n")
