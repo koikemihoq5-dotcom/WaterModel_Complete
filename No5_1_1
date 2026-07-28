@@ -70,41 +70,52 @@ print(stage_threshold)
 #==========================================================
 # 8. 実測データから播種GDDを推定
 #==========================================================
-
-
 seed_est <-
 
-    stage_all %>%
+stage_all %>%
 
-    left_join(
-        stage_threshold,
-        by="stage"
-    ) %>%
+filter(!is.na(cumGDD)) %>%
 
-    mutate(
+group_by(site,year) %>%
 
-        seedGDD = cumGDD - stageGDD
+do({
 
-    ) %>%
+    fit <- lm(stage ~ cumGDD, data=.)
 
-    group_by(site,year) %>%
 
-    summarise(
+    a <- coef(fit)[1]
+    b <- coef(fit)[2]
 
-        seeding_GDD =
-            median(seedGDD,na.rm=TRUE),
 
-        sd_seedGDD =
-            sd(seedGDD,na.rm=TRUE),
+    # V2到達GDD
+    V2_GDD <- (2-a)/b
 
-        n_obs=n(),
 
-        .groups="drop"
+    # 観測データ由来の播種GDD
+    seedGDD <- V2_GDD - 583
+
+
+    tibble(
+
+        seeding_GDD = seedGDD,
+
+        V2_GDD = V2_GDD,
+
+        slope=b,
+
+        intercept=a,
+
+        R2=summary(fit)$r.squared,
+
+        n_obs=nrow(.)
+
 
     )
 
 
-print(head(seed_est))
+}) %>%
+
+ungroup()
 
 
 #==========================================================
@@ -112,45 +123,26 @@ print(head(seed_est))
 #==========================================================
 
 find_date_from_gdd <- function(targetGDD, yr){
-
+    
     w <- weather %>%
-        filter(year==yr)
-
+        filter(year == yr)
+    
     idx <- which.min(
-        abs(w$cumGDD-targetGDD)
+        abs(w$cumGDD - targetGDD)
     )
-
+    
     w$date[idx]
-
+    
 }
+
 
 seed_est$seeding_date <-
 
-mapply(
-    find_date_from_gdd,
-    seed_est$seeding_GDD,
-    seed_est$year
-)
-
-origin="1970-01-01"
-
-)
-
-) %>%
-
-select(
-
-site,
-year,
-seeding_date,
-n_obs,
-seeding_GDD,
-sd_seedGDD
-
-)
-
-
-
+    mapply(
+        find_date_from_gdd,
+        seed_est$seeding_GDD,
+        seed_est$year
+    )
 #==========================================================
 # 10. disease結合
 #==========================================================
@@ -174,7 +166,13 @@ if(length(list_disease)>0){
 
 }
 
-
+seed_est %>%
+    summarise(
+        mean=mean(seeding_GDD),
+        sd=sd(seeding_GDD),
+        min=min(seeding_GDD),
+        max=max(seeding_GDD)
+    )
 
 #==========================================================
 # 11. 保存
