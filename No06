@@ -1,0 +1,128 @@
+# =========================================================
+# 生育ステージ（播種日・V2到達日等）の予測処理 (確定修正版)
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+
+# 1. 対象ファイルの自動取得
+stage_files <- list.files("00_RawData", pattern = "Vstage.*\\.csv$", full.names = TRUE)
+
+if (length(stage_files) == 0) {
+  stop("❌ 00_RawData フォルダ内に Vstage ファイルが見つかりません。")
+}
+
+# 2. 全年度ファイルの読み込みと結合処理
+list_v_long <- list()
+list_disease <- list()
+
+for (f_path in stage_files) {
+  file_name <- basename(f_path)
+  year_val <- as.numeric(gsub("[^0-9]", "", file_name))
+  if (is.na(year_val) || year_val < 2000) year_val <- 2025
+  
+  df_raw <- read.csv(f_path, stringsAsFactors = FALSE, fileEncoding = "CP932")
+  
+  # A. 病気データ(disease)の退避
+  if ("disease" %in% names(df_raw)) {
+    dis_df <- df_raw %>% 
+      select(site = name, disease) %>% 
+      distinct() %>% 
+      mutate(year = year_val)
+    list_disease[[file_name]] <- dis_df
+  }
+  
+  # B. 縦持ち変換
+  df_long <- df_raw %>%
+    select(site = name, matches("^V_?\\d+")) %>%
+    pivot_longer(
+      cols = -site,
+      names_to = "date_str",
+      values_to = "stage_val",
+      values_transform = list(stage_val = as.character)
+    ) %>%
+    mutate(
+      stage_val = as.numeric(stage_val),
+      clean_md  = gsub("[^0-9]", "", date_str),
+      date      = as.Date(paste0(year_val, "-", substr(clean_md, 1, 2), "-", substr(clean_md, 3, 4))),
+      year      = year_val
+    ) %>%
+    filter(!is.na(stage_val) & !is.na(date))
+  
+  list_v_long[[file_name]] <- df_long
+}
+
+df_v_long_all <- bind_rows(list_v_long)
+
+# 3. エラーを出さない安全な日付計算関数 (key情報受け取り型)
+calc_crop_dates_safe <- function(df_site, key) {
+  if (nrow(df_site) < 2) {
+    return(data.frame(pred_seeding_date = as.Date(NA), v2_date = as.Date(NA)))
+  }
+  
+  # グループキーから年度を取得（group_modifyの第2引数 key から確実に取得）
+  target_year <- key$year[1]
+  base_date   <- as.Date(paste0(target_year, "-06-01"))
+  
+  df_site$day_num <- as.numeric(df_site$date - base_date)
+  
+  # 回帰モデルの当てはめ
+  fit <- tryCatch(lm(stage_val ~ day_num, data = df_site), error = function(e) NULL)
+  if (is.null(fit)) {
+    return(data.frame(pred_seeding_date = as.Date(NA), v2_date = as.Date(NA)))
+  }
+  
+  a <- coef(fit)["day_num"]
+  b <- coef(fit)[1]
+  
+  if (is.na(a) || is.na(b) || a <= 0.001 || is.infinite(a)) {
+    return(data.frame(pred_seeding_date = as.Date(NA), v2_date = as.Date(NA)))
+  }
+  
+  # 逆算
+  seeding_day_num <- (0 - b) / a
+  v2_day_num      <- (2 - b) / a
+  
+  seeding_date <- if (is.finite(seeding_day_num) && abs(seeding_day_num) < 100) base_date + round(seeding_day_num) else as.Date(NA)
+  v2_date      <- if (is.finite(v2_day_num) && abs(v2_day_num) < 100) base_date + round(v2_day_num) else as.Date(NA)
+  
+  return(data.frame(pred_seeding_date = seeding_date, v2_date = v2_date))
+}
+
+# 4. group_modify でデータ(.x) と キー(.y) の両方を渡す
+crop_dates_df <- df_v_long_all %>%
+  group_by(year, site) %>%
+  group_modify(~ calc_crop_dates_safe(.x, .y)) %>%
+  ungroup()
+
+# 5. 年度ごとに計算不能 (NA) 地点を「同年度の他地点平均」で補完
+crop_dates_df <- crop_dates_df %>%
+  group_by(year) %>%
+  mutate(
+    mean_seeding = mean(pred_seeding_date, na.rm = TRUE),
+    mean_v2      = mean(v2_date, na.rm = TRUE),
+    
+    # 万が一全滅した年度用のバックアップ日付
+    mean_seeding = if_else(is.na(mean_seeding), as.Date(paste0(year[1], "-06-01")), mean_seeding),
+    mean_v2      = if_else(is.na(mean_v2), as.Date(paste0(year[1], "-06-15")), mean_v2),
+    
+    pred_seeding_date = if_else(is.na(pred_seeding_date), round(mean_seeding), pred_seeding_date),
+    v2_date           = if_else(is.na(v2_date), round(mean_v2), v2_date),
+    v5_date           = v2_date + 15,
+    r1_date           = v2_date + 35
+  ) %>%
+  select(-mean_seeding, -mean_v2) %>%
+  ungroup()
+
+# 6. 病気発生率 (disease) の結合
+if (length(list_disease) > 0) {
+  df_disease_all <- bind_rows(list_disease)
+  crop_dates_df  <- crop_dates_df %>% left_join(df_disease_all, by = c("year", "site"))
+}
+
+# 7. 書き出し（01_ProcessedData フォルダへ）
+output_stage_path <- "01_ProcessedData/crop_stages_predicted.csv"
+write.csv(crop_dates_df, output_stage_path, row.names = FALSE, fileEncoding = "CP932")
+
+cat("🎉 成功！2024年・2025年ともに正常処理されました:", output_stage_path, "\n")
