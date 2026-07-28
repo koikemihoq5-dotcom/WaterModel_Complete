@@ -64,91 +64,157 @@ stage_all <-
     )
 
 #==========================================================
-# 8. GDD → 日付
+# 8. 実測データから播種GDDを推定
+#==========================================================
+
+seed_est <-
+
+stage_all %>%
+
+mutate(
+
+stageGDD =
+case_when(
+
+stage == 2 ~ 580,
+stage == 3 ~ 570,
+stage == 4 ~ 660,
+stage == 5 ~ 650,
+stage == 6 ~ 675,
+stage == 7 ~ 687,
+stage == 8 ~ 760,
+stage == 9 ~ 786,
+stage == 10 ~ 850,
+stage == 11 ~ 860,
+stage >=12 ~ 920
+
+),
+
+seedGDD =
+cumGDD - stageGDD
+
+) %>%
+
+filter(!is.na(seedGDD)) %>%
+
+group_by(site,year) %>%
+
+summarise(
+
+seeding_GDD =
+mean(seedGDD,na.rm=TRUE),
+
+sd_seedGDD =
+sd(seedGDD,na.rm=TRUE),
+
+n_obs=n(),
+
+.groups="drop"
+
+)
+
+
+print(seed_est)
+
+
+
+#==========================================================
+# 9. 播種GDD → 播種日へ変換
 #==========================================================
 
 find_date_from_gdd <- function(targetGDD, yr){
-    
+
     w <- weather %>%
-        
-        filter(year==yr)
-    
-    idx <- which.min(abs(w$cumGDD-targetGDD))
-    
+        filter(year == yr)
+
+    idx <- which.min(
+        abs(w$cumGDD - targetGDD)
+    )
+
     w$date[idx]
-    
+
 }
 
-stage_all$seed_date <-
-    
-    mapply(
-        
-        find_date_from_gdd,
-        
-        stage_all$seedGDD,
-        
-        stage_all$year
-        
-    )
 
 crop_stage <-
-    
-    stage_all %>%
-    
-    group_by(site,year) %>%
-    
-    summarise(
-        
-        seeding_date =
-            
-            as.Date(
-                
-                round(
-                    
-                    mean(
-                        
-                        as.numeric(seed_date)
-                        
-                    )
-                    
-                ),
-                
-                origin="1970-01-01"
-                
-            ),
-        
-        n_obs = n(),
-        
-        .groups="drop"
-        
-    )
+
+seed_est %>%
+
+mutate(
+
+seeding_date =
+
+as.Date(
+
+mapply(
+
+find_date_from_gdd,
+
+seeding_GDD,
+
+year
+
+),
+
+origin="1970-01-01"
+
+)
+
+) %>%
+
+select(
+
+site,
+year,
+seeding_date,
+n_obs,
+seeding_GDD,
+sd_seedGDD
+
+)
+
+
+
+#==========================================================
+# 10. disease結合
+#==========================================================
 
 if(length(list_disease)>0){
-    
+
     disease_all <- bind_rows(list_disease)
-    
+
+
     crop_stage <-
-        
+
         left_join(
-            
+
             crop_stage,
-            
+
             disease_all,
-            
+
             by=c("site","year")
-            
+
         )
-    
+
 }
 
+
+
+#==========================================================
+# 11. 保存
+#==========================================================
+
 write.csv(
-    
-    crop_stage,
-    
-    "01_ProcessedData/crop_stages_predicted2.csv",
-    
-    row.names=FALSE,
-    
-    fileEncoding="CP932"
-    
+
+crop_stage,
+
+"01_ProcessedData/crop_stages_predicted_GDD.csv",
+
+row.names=FALSE,
+
+fileEncoding="CP932"
+
 )
+
+
+cat("\n播種日推定完了\n")
