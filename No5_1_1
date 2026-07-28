@@ -89,7 +89,10 @@ summarise(
 seed_est <- seed_est %>%
     mutate(
         seeding_GDD =
-            pmax(seeding_GDD,0)
+            case_when(
+                seeding_GDD < -50 ~ -50,
+                TRUE ~ seeding_GDD
+            )
     )
 #==========================================================
 # 9. 播種GDD → 播種日へ変換
