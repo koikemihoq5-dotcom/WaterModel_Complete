@@ -1,0 +1,136 @@
+# =========================================================
+# 生育ステージ予測処理 (2024年用・R2除外＆播種日個別計算版)
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+
+# 1. 2024年度ファイルの取得
+stage_files <- list.files("00_RawData", pattern = "2024.*\\.csv$", full.names = TRUE)
+
+if (length(stage_files) == 0) {
+  stop("❌ 00_RawData フォルダ内に 2024 年の CSV ファイルが見つかりません。")
+}
+
+list_v_long <- list()
+list_disease <- list()
+
+for (f_path in stage_files) {
+  file_name <- basename(f_path)
+  year_val <- 2024
+  
+  df_raw <- read.csv(f_path, stringsAsFactors = FALSE, fileEncoding = "CP932")
+  
+  # A. 病気データ(disease)の退避
+  if ("disease" %in% names(df_raw)) {
+    dis_df <- df_raw %>% 
+      select(site = name, disease) %>% 
+      distinct() %>% 
+      mutate(year = year_val)
+    list_disease[[file_name]] <- dis_df
+  }
+  
+  if ("name" %in% names(df_raw)) {
+    df_raw <- df_raw %>% rename(site = name)
+  }
+  
+  # ピボット対象列の自動検出 (V_ または vwc_ で始まる列、または数値/ステージ列)
+  target_cols <- grep("^V_|^vwc_", names(df_raw), value = TRUE)
+  if (length(target_cols) == 0) {
+    target_cols <- setdiff(names(df_raw), c("site", "disease", "year", "Year", "X", "X.1", "X.2", "X.3"))
+  }
+  
+  # 縦持ち変換
+  df_long <- df_raw %>%
+    select(site, all_of(target_cols)) %>%
+    pivot_longer(
+      cols = -site,
+      names_to = "date_str",
+      values_to = "stage_val",
+      values_transform = list(stage_val = as.character)
+    ) %>%
+    mutate(
+      # R2 などの文字が含まれる場合は NA にして純粋な数値 (Vステージ) のみ抽出
+      stage_num = suppressWarnings(as.numeric(stage_val)),
+      clean_md  = gsub("[^0-9]", "", date_str)
+    ) %>%
+    mutate(
+      date = if_else(
+        nchar(clean_md) >= 4,
+        as.Date(paste0(year_val, "-", substr(clean_md, 1, 2), "-", substr(clean_md, 3, 4))),
+        as.Date(NA)
+      ),
+      year = year_val
+    ) %>%
+    # R2等で NA になった行・日付が無効な行を完全に除外
+    filter(!is.na(stage_num) & !is.na(date))
+  
+  list_v_long[[file_name]] <- df_long
+}
+
+df_v_long_all <- bind_rows(list_v_long)
+
+# 3. R2除外データから個別に到達日を計算する関数
+calc_crop_dates_robust <- function(df_site, key) {
+  if (nrow(df_site) < 1) {
+    return(data.frame(pred_seeding_date = as.Date(NA), v2_date = as.Date(NA), v6_date = as.Date(NA)))
+  }
+  
+  # 複数日の数値データがある場合は単回帰
+  if (nrow(df_site) >= 2 && length(unique(df_site$date)) >= 2) {
+    base_date <- min(df_site$date)
+    df_site$day_num <- as.numeric(df_site$date - base_date)
+    
+    fit <- tryCatch(lm(stage_num ~ day_num, data = df_site), error = function(e) NULL)
+    
+    if (!is.null(fit)) {
+      a <- coef(fit)["day_num"]
+      b <- coef(fit)[1]
+      
+      # 健全な生長速度（1日あたり 0.02〜0.5 葉）の範囲内であれば回帰結果を使用
+      if (!is.na(a) && a > 0.02) {
+        seeding_day <- (0 - b) / a
+        v2_day      <- (2 - b) / a
+        v6_day      <- (6 - b) / a
+        
+        return(data.frame(
+          pred_seeding_date = base_date + round(seeding_day),
+          v2_date           = base_date + round(v2_day),
+          v6_date           = base_date + round(v6_day)
+        ))
+      }
+    }
+  }
+  
+  # 数値データが1点のみ残った場合（例: 7/22のデータのみで7/29がR2だった場合など）：
+  # 標準ペース（1日 0.143葉 ＝ 7日に1葉）で逆算
+  first_obs <- df_site[1, ]
+  est_days_from_seeding <- first_obs$stage_num / 0.143
+  est_days_from_v2      <- (first_obs$stage_num - 2) / 0.143
+  est_days_from_v6      <- (first_obs$stage_num - 6) / 0.143
+  
+  return(data.frame(
+    pred_seeding_date = first_obs$date - round(est_days_from_seeding),
+    v2_date           = first_obs$date - round(est_days_from_v2),
+    v6_date           = first_obs$date - round(est_days_from_v6)
+  ))
+}
+
+# 4. 各地点の到達日を計算
+crop_dates_df <- df_v_long_all %>%
+  group_by(year, site) %>%
+  group_modify(~ calc_crop_dates_robust(.x, .y)) %>%
+  ungroup()
+
+# 5. 病気データの結合
+if (length(list_disease) > 0) {
+  df_disease_all <- bind_rows(list_disease)
+  crop_dates_df  <- crop_dates_df %>% left_join(df_disease_all, by = c("year", "site"))
+}
+
+# 6. 保存
+output_stage_path <- "01_ProcessedData/crop_stages_predicted_2024.csv"
+write.csv(crop_dates_df, output_stage_path, row.names = FALSE, fileEncoding = "CP932")
+
+cat("🎉 完了！R2を除外し、地点ごとのVステージ進行状況に合わせた播種日・V2・V6到達日が出力されました:", output_stage_path, "\n")
