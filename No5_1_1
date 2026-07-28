@@ -1,0 +1,154 @@
+#==========================================================
+# 5. 観測日に累積GDDを付与
+#==========================================================
+
+stage_all <-
+
+    stage_all %>%
+
+    select(-matches("cumGDD")) %>%
+
+    left_join(
+
+        weather %>%
+            select(date, year, cumGDD),
+
+        by = c("date","year")
+
+    )
+if(any(is.na(stage_all$cumGDD))){
+    
+    warning("累積GDDが取得できない日があります。")
+    
+}
+
+#==========================================================
+# 6. Stageごとの代表GDD
+#==========================================================
+
+GDD_STAGE <- c(
+    
+    "2"  = 583,
+    "3"  = 570,
+    "4"  = 662,
+    "5"  = 552,
+    "6"  = 675,
+    "7"  = 687,
+    "8"  = 761,
+    "9"  = 786,
+    "10" = 850,
+    "11" = 859,
+    "12" = 920,
+    "13" = 920
+    
+)
+
+#==========================================================
+# 7. 各観測から播種時GDDを逆算
+#==========================================================
+
+stage_all <-
+    
+    stage_all %>%
+    
+    mutate(
+        
+        stageGDD =
+            
+            GDD_STAGE[as.character(stage)],
+        
+        seedGDD =
+            
+            cumGDD - stageGDD
+        
+    )
+
+#==========================================================
+# 8. GDD → 日付
+#==========================================================
+
+find_date_from_gdd <- function(targetGDD, yr){
+    
+    w <- weather %>%
+        
+        filter(year==yr)
+    
+    idx <- which.min(abs(w$cumGDD-targetGDD))
+    
+    w$date[idx]
+    
+}
+
+stage_all$seed_date <-
+    
+    mapply(
+        
+        find_date_from_gdd,
+        
+        stage_all$seedGDD,
+        
+        stage_all$year
+        
+    )
+
+crop_stage <-
+    
+    stage_all %>%
+    
+    group_by(site,year) %>%
+    
+    summarise(
+        
+        seeding_date =
+            
+            as.Date(
+                
+                round(
+                    
+                    mean(
+                        
+                        as.numeric(seed_date)
+                        
+                    )
+                    
+                ),
+                
+                origin="1970-01-01"
+                
+            ),
+        
+        n_obs = n(),
+        
+        .groups="drop"
+        
+    )
+
+if(length(list_disease)>0){
+    
+    disease_all <- bind_rows(list_disease)
+    
+    crop_stage <-
+        
+        left_join(
+            
+            crop_stage,
+            
+            disease_all,
+            
+            by=c("site","year")
+            
+        )
+    
+}
+
+write.csv(
+    
+    crop_stage,
+    
+    "01_ProcessedData/crop_stages_predicted2.csv",
+    
+    row.names=FALSE,
+    
+    fileEncoding="CP932"
+    
+)
