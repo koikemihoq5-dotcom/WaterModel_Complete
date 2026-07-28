@@ -68,8 +68,9 @@ stage_threshold <-
 
 print(stage_threshold)
 #==========================================================
-# 8. 実測データから播種GDDを推定
+# 8. 実測データから播種GDDを推定（安定版）
 #==========================================================
+
 seed_est <-
 
 stage_all %>%
@@ -86,53 +87,83 @@ do({
     a <- coef(fit)[1]
     b <- coef(fit)[2]
 
-
-    # V2到達GDD
-    V2_GDD <- (2-a)/b
+    R2 <- summary(fit)$r.squared
 
 
-    # 観測データ由来の播種GDD
-    seedGDD <- V2_GDD - 583
+    # 傾き異常を除外
+    if(
+        is.na(b) |
+        abs(b) < 0.005 |
+        R2 < 0.8 |
+        nrow(.) < 3
+    ){
+
+        tibble(
+            seeding_GDD = NA,
+            V2_GDD = NA,
+            slope=b,
+            intercept=a,
+            R2=R2,
+            n_obs=nrow(.)
+        )
+
+    }else{
 
 
-    tibble(
+        V2_GDD <- (2-a)/b
 
-        seeding_GDD = seedGDD,
-
-        V2_GDD = V2_GDD,
-
-        slope=b,
-
-        intercept=a,
-
-        R2=summary(fit)$r.squared,
-
-        n_obs=nrow(.)
+        seedGDD <- V2_GDD - 583
 
 
-    )
+        tibble(
 
+            seeding_GDD = seedGDD,
+
+            V2_GDD = V2_GDD,
+
+            slope=b,
+
+            intercept=a,
+
+            R2=R2,
+
+            n_obs=nrow(.)
+
+        )
+
+    }
 
 }) %>%
 
 ungroup()
 
-
+seed_est <- seed_est %>%
+    
+    mutate(
+        seeding_GDD =
+            ifelse(
+                seeding_GDD < 0,
+                0,
+                seeding_GDD
+            )
+    )
 #==========================================================
 # 9. 播種GDD → 播種日へ変換
 #==========================================================
 
 find_date_from_gdd <- function(targetGDD, yr){
-    
+
     w <- weather %>%
         filter(year == yr)
-    
+
+    targetGDD <- max(targetGDD,0)
+
     idx <- which.min(
-        abs(w$cumGDD - targetGDD)
+        abs(w$cumGDD-targetGDD)
     )
-    
+
     w$date[idx]
-    
+
 }
 
 
@@ -152,28 +183,15 @@ if(length(list_disease)>0){
     disease_all <- bind_rows(list_disease)
 
 
-    crop_stage <-
+    seed_est <-
 
         left_join(
-
-            crop_stage,
-
+            seed_est,
             disease_all,
-
             by=c("site","year")
-
         )
 
 }
-
-seed_est %>%
-    summarise(
-        mean=mean(seeding_GDD),
-        sd=sd(seeding_GDD),
-        min=min(seeding_GDD),
-        max=max(seeding_GDD)
-    )
-
 #==========================================================
 # 11. 保存
 #==========================================================
@@ -190,5 +208,9 @@ fileEncoding="CP932"
 
 )
 
+summary(seed_est$seeding_GDD)
 
+hist(seed_est$seeding_GDD)
+
+head(seed_est)
 cat("\n播種日推定完了\n")
