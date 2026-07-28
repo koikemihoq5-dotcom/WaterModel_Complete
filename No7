@@ -1,0 +1,86 @@
+# =========================================================
+# 05_poster_figures.R
+# D1中間審査ポスター発表用図表の描画・高解像度保存
+# =========================================================
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# ---------------------------------------------------------
+# 図1. 単日SMC vs RCR (ファセット表示)
+# ---------------------------------------------------------
+if (exists("MRA_RAR")) {
+  vwc_cols <- c("vwc_0630", "vwc_0707", "vwc_0713")
+  date_labels <- c("2025年6月30日", "2025年7月7日", "2025年7月13日")
+
+  df_long <- MRA_RAR %>%
+    select(RCR, all_of(vwc_cols)) %>%
+    pivot_longer(cols = all_of(vwc_cols), names_to = "Date", values_to = "VWC") %>%
+    na.omit()
+  
+  df_long$Date <- factor(df_long$Date, levels = vwc_cols, labels = date_labels)
+
+  stats_summary <- df_long %>%
+    group_by(Date) %>%
+    summarise(
+      r2 = summary(lm(RCR ~ VWC))$r.squared,
+      rmse = sqrt(mean(residuals(lm(RCR ~ VWC))^2))
+    )
+
+  facet_labels <- stats_summary %>%
+    mutate(
+      plot_label = sprintf("R² = %.2f\nRMSE = %.2f", r2, rmse),
+      x = min(df_long$VWC) + (max(df_long$VWC) - min(df_long$VWC)) * 0.05,
+      y = max(df_long$RCR) - (max(df_long$RCR) - min(df_long$RCR)) * 0.05
+    )
+
+  custom_colors <- c("2025年6月30日"="#2b5c8f", "2025年7月7日"="#d95f02", "2025年7月13日"="#7570b3")
+
+  p_facet <- ggplot(df_long, aes(x = VWC, y = RCR, color = Date, fill = Date)) +
+    geom_point(size = 2.5, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, alpha = 0.2, linewidth = 1) +
+    geom_text(data = facet_labels, aes(x = x, y = y, label = plot_label),
+              hjust = 0, vjust = 1, size = 5.5, fontface = "bold", color = "black", inherit.aes = FALSE) +
+    facet_wrap(~ Date, ncol = 1) +
+    scale_color_manual(values = custom_colors) +
+    scale_fill_manual(values = custom_colors) +
+    labs(x = "Volumetric Water Content (VWC)", y = "収穫時のRCRの割合") +
+    theme_bw(base_size = 14) +
+    theme(strip.text = element_text(face = "bold", size = 15), legend.position = "none")
+
+  ggsave("05_Poster_D1/RCR_vs_VWC_facet.png", plot = p_facet, width = 5.5, height = 9, dpi = 300)
+}
+
+# ---------------------------------------------------------
+# 図2. 水収支モデル精度 (1:1 散布図)
+# ---------------------------------------------------------
+if (file.exists("02_ModelOutputs/merged_SMC_4years.csv")) {
+  merged_data <- read.csv("02_ModelOutputs/merged_SMC_4years.csv", stringsAsFactors = FALSE)
+  merged_data$date <- as.Date(merged_data$date)
+  merged_data <- mutate(merged_data, year = as.character(format(date, "%Y")))
+
+  r2_val   <- sprintf("%.2f", cor(merged_data$SMC_obs, merged_data$SMC_pred, use = "complete.obs")^2)
+  rmse_val <- sprintf("%.3f", sqrt(mean((merged_data$SMC_obs - merged_data$SMC_pred)^2, na.rm = TRUE)))
+  label_text <- paste0("R² = ", r2_val, "\nRMSE = ", rmse_val)
+
+  p_1to1 <- ggplot(merged_data, aes(x = SMC_obs, y = SMC_pred, shape = year, color = year)) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_point(size = 3.5, alpha = 0.8) +
+    scale_x_continuous(limits = c(0.0, 0.45), breaks = seq(0.0, 0.45, 0.1)) +
+    scale_y_continuous(limits = c(0.0, 0.45), breaks = seq(0.0, 0.45, 0.1)) +
+    coord_fixed(ratio = 1) +
+    annotate("text", x = 0.02, y = 0.42, label = label_text, hjust = 0, vjust = 1, size = 5, fontface = "bold") +
+    labs(
+      x = expression(bold("実測土壌水分量 SMC"[obs] ~ "(m"^3*"/m"^3*")")),
+      y = expression(bold("推定土壌水分量 SMC"[pred] ~ "(m"^3*"/m"^3*")")),
+      shape = "年度", color = "年度"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(legend.position = "bottom")
+
+  ggsave("04_Figures/SMC_1to1_plot.png", plot = p_1to1, width = 6, height = 6.5, dpi = 300)
+  ggsave("05_Poster_D1/SMC_1to1_plot_poster.png", plot = p_1to1, width = 6, height = 6.5, dpi = 300)
+}
+
+cat("✅ ポスター用高解像度画像の出力が完了しました: 04_Figures/ および 05_Poster_D1/\n")
