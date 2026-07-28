@@ -23,27 +23,6 @@ if(any(is.na(stage_all$cumGDD))){
 }
 
 #==========================================================
-# 6. Stageごとの代表GDD
-#==========================================================
-
-GDD_STAGE <- c(
-    
-    "2"  = 583,
-    "3"  = 570,
-    "4"  = 662,
-    "5"  = 552,
-    "6"  = 675,
-    "7"  = 687,
-    "8"  = 761,
-    "9"  = 786,
-    "10" = 850,
-    "11" = 859,
-    "12" = 920,
-    "13" = 920
-    
-)
-
-#==========================================================
 # 7. 各観測から播種時GDDを逆算
 #==========================================================
 
@@ -91,67 +70,50 @@ stage_all %>%
 print(V2_GDD_required)
 
 #==========================================================
-# 8. 実測データから播種GDDを推定
+# 8. 実測Stageから播種GDDを推定
 #==========================================================
+
 seed_est <-
 
 stage_all %>%
 
-filter(
-    !is.na(cumGDD),
-    !is.na(stage)
+mutate(
+
+    stageGDD =
+        stage_threshold$stageGDD[
+            match(stage, stage_threshold$stage)
+        ],
+
+    seedGDD =
+        cumGDD - stageGDD
+
 ) %>%
 
 group_by(site,year) %>%
 
-do({
+summarise(
 
-    fit <- lm(stage ~ cumGDD, data=.)
+    seeding_GDD =
+        median(seedGDD, na.rm=TRUE),
 
+    sd_seedGDD =
+        sd(seedGDD, na.rm=TRUE),
 
-    a <- coef(fit)[1]
-    b <- coef(fit)[2]
+    n_obs=n(),
 
+    .groups="drop"
 
-    seedGDD <- -a/b
-
-
-    tibble(
-
-        seeding_GDD = seedGDD,
-
-        slope=b,
-
-        intercept=a,
-
-        R2=summary(fit)$r.squared,
-
-        n_obs=nrow(.)
-
-    )
-
-}) %>%
-
-ungroup()
-
-
+)
 
 #==========================================================
 # 8.5 負の播種GDDを補正
 #==========================================================
 
 seed_est <- seed_est %>%
-    
-    mutate(
-        
-        seeding_GDD_adj =
-            ifelse(
-                seeding_GDD < 0,
-                0,
-                seeding_GDD
-            )
-        
-    )
+mutate(
+    seeding_GDD =
+        pmax(seeding_GDD,0)
+)
 #==========================================================
 # 9. 播種GDD → 播種日へ変換
 #==========================================================
@@ -173,11 +135,11 @@ find_date_from_gdd <- function(targetGDD, yr){
 
 seed_est$seeding_date <-
 
-    mapply(
-        find_date_from_gdd,
-        seed_est$seeding_GDD_adj,
-        seed_est$year
-    )
+mapply(
+    find_date_from_gdd,
+    seed_est$seeding_GDD,
+    seed_est$year
+)
 
 head(seed_est[,c(
 "site",
