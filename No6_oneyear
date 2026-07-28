@@ -134,3 +134,30 @@ output_stage_path <- "01_ProcessedData/crop_stages_predicted_2024.csv"
 write.csv(crop_dates_df, output_stage_path, row.names = FALSE, fileEncoding = "CP932")
 
 cat("🎉 完了！R2を除外し、地点ごとのVステージ進行状況に合わせた播種日・V2・V6到達日が出力されました:", output_stage_path, "\n")
+
+# =========================================================
+# 04_wetness_regression.R
+# 帯水指標の集計および病気発生率との2次多項式回帰分析
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+
+# 1. 必要データの読み込み
+df_pred <- read.csv("02_ModelOutputs/soil_moisture_pred_4years_full.csv", stringsAsFactors = FALSE)
+df_pred$date <- as.Date(df_pred$date)
+
+# 生育ステージデータの読み込み＆列の安全生成
+df_stages <- read.csv("01_ProcessedData/crop_stages_predicted_2024.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    pred_seeding_date = as.Date(pred_seeding_date),
+    v2_date           = as.Date(v2_date),
+    # v5_date が無ければ v2_date + 15日 で自動生成
+    v5_date           = if ("v5_date" %in% names(.)) as.Date(v5_date) else v2_date + 15,
+    # r1_date が無ければ v2_date + 35日 で自動生成
+    r1_date           = if ("r1_date" %in% names(.)) as.Date(r1_date) else v2_date + 35
+  )
+
+cat("✅ 2024年の生育ステージデータを正常にロードしました！（v5_date / r1_date 自動補填完了）\n")
