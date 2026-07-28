@@ -1,0 +1,191 @@
+#==========================================================
+# 8. 回帰式から各ステージの到達GDDを計算
+#==========================================================
+
+calc_stage_gdd <- function(intercept, slope, stage){
+    
+    (stage - intercept) / slope
+    
+}
+
+crop_stage <- fit_result %>%
+    
+    filter(
+        !is.na(intercept),
+        !is.na(slope),
+        slope > 0
+    ) %>%
+    
+    mutate(
+        
+        GDD_seed = calc_stage_gdd(intercept, slope, 0),
+        
+        GDD_V2   = calc_stage_gdd(intercept, slope, 2),
+        
+        GDD_V4   = calc_stage_gdd(intercept, slope, 4),
+        
+        GDD_V6   = calc_stage_gdd(intercept, slope, 6),
+        
+        GDD_V8   = calc_stage_gdd(intercept, slope, 8),
+        
+        GDD_V10  = calc_stage_gdd(intercept, slope, 10),
+        
+        GDD_R1   = calc_stage_gdd(intercept, slope, 13)
+        
+    )
+#==========================================================
+# 9. GDD → 日付
+#==========================================================
+
+find_date_from_gdd <- function(targetGDD, year, weather){
+    
+    w <- weather %>%
+        
+        filter(year == !!year)
+    
+    if(nrow(w)==0) return(as.Date(NA))
+    
+    idx <- which.min(abs(w$cumGDD - targetGDD))
+    
+    w$date[idx]
+    
+}
+#==========================================================
+# 10. 生育日推定
+#==========================================================
+
+crop_stage <-
+    
+    crop_stage %>%
+    
+    rowwise() %>%
+    
+    mutate(
+        
+        seeding_date =
+            
+            find_date_from_gdd(
+                GDD_seed,
+                year,
+                weather
+            ),
+        
+        V2_date =
+            
+            find_date_from_gdd(
+                GDD_V2,
+                year,
+                weather
+            ),
+        
+        V4_date =
+            
+            find_date_from_gdd(
+                GDD_V4,
+                year,
+                weather
+            ),
+        
+        V6_date =
+            
+            find_date_from_gdd(
+                GDD_V6,
+                year,
+                weather
+            ),
+        
+        V8_date =
+            
+            find_date_from_gdd(
+                GDD_V8,
+                year,
+                weather
+            ),
+        
+        V10_date =
+            
+            find_date_from_gdd(
+                GDD_V10,
+                year,
+                weather
+            ),
+        
+        R1_date =
+            
+            find_date_from_gdd(
+                GDD_R1,
+                year,
+                weather
+            )
+        
+    ) %>%
+    
+    ungroup()
+#==========================================================
+# 11. disease結合
+#==========================================================
+
+if(length(list_disease)>0){
+    
+    disease_all <- bind_rows(list_disease)
+    
+    crop_stage <-
+        
+        crop_stage %>%
+        
+        left_join(
+            
+            disease_all,
+            
+            by=c("site","year")
+            
+        )
+    
+}
+#==========================================================
+# 12. 保存
+#==========================================================
+
+crop_stage <-
+    
+    crop_stage %>%
+    
+    select(
+        
+        site,
+        year,
+        
+        seeding_date,
+        
+        V2_date,
+        V4_date,
+        V6_date,
+        V8_date,
+        V10_date,
+        R1_date,
+        
+        disease,
+        
+        intercept,
+        slope,
+        R2
+        
+    )
+
+write.csv(
+    
+    crop_stage,
+    
+    "01_ProcessedData/crop_stages_predicted.csv",
+    
+    row.names = FALSE,
+    
+    fileEncoding = "CP932"
+    
+)
+
+cat("\n")
+cat("=====================================\n")
+cat("Crop stage prediction completed.\n")
+cat("Saved : crop_stages_predicted.csv\n")
+cat("=====================================\n")
