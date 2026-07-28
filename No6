@@ -1,0 +1,104 @@
+# =========================================================
+# 04_wetness_regression.R
+# 帯水指標の集計および病気発生率との2次多項式回帰分析
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+
+# 1. 必要データの読み込み
+df_pred <- read.csv("02_ModelOutputs/soil_moisture_pred_4years_full.csv", stringsAsFactors = FALSE)
+df_pred$date <- as.Date(df_pred$date)
+
+df_stages <- read.csv("01_ProcessedData/crop_stages_predicted.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    pred_seeding_date = as.Date(pred_seeding_date),
+    v2_date           = as.Date(v2_date),
+    v5_date           = as.Date(v5_date),
+    r1_date           = as.Date(r1_date)
+  )
+
+# 2. 過湿指標の計算関数
+calc_period_wetness <- function(df_sub, th) {
+  if (nrow(df_sub) == 0) return(data.frame(period_days=0, max_cont_wet_days=0, total_wet_days=0, mean_smc_all=NA, mean_smc_wet=NA, excess_smc_sum=0))
+  
+  smc <- df_sub$SMC_pred
+  is_wet <- smc >= th
+  rl <- rle(is_wet)
+  
+  data.frame(
+    period_days       = nrow(df_sub),
+    max_cont_wet_days = if (any(rl$values)) max(rl$lengths[rl$values]) else 0,
+    total_wet_days    = sum(is_wet, na.rm = TRUE),
+    mean_smc_all      = mean(smc, na.rm = TRUE),
+    mean_smc_wet      = if (sum(is_wet) > 0) mean(smc[is_wet], na.rm = TRUE) else NA,
+    excess_smc_sum    = sum(pmax(0, smc - th), na.rm = TRUE)
+  )
+}
+
+# 3. 閾値・時期ループ一括計算
+thresholds <- c(0.20, 0.25, 0.30, 0.35, 0.40, 0.45)
+results_list <- list()
+
+df_2025 <- df_pred %>% filter(year(date) == 2025)
+
+for (th in thresholds) {
+  th_percent <- as.integer(th * 100)
+  df_wetness_th <- df_2025 %>%
+    inner_join(df_stages, by = "site") %>%
+    group_by(site) %>%
+    group_modify(~ {
+      df_site <- .x
+      s_d <- df_site$pred_seeding_date[1]; v2_d <- df_site$v2_date[1]
+      v5_d <- df_site$v5_date[1]; r1_d <- df_site$r1_date[1]
+      dis <- if ("disease" %in% names(df_site)) df_site$disease[1] else NA
+      
+      bind_rows(
+        data.frame(disease = dis, period = "1_初期(播種-V2)", calc_period_wetness(filter(df_site, date >= s_d & date <= v2_d), th)),
+        data.frame(disease = dis, period = "2_中期(V2-V5)",   calc_period_wetness(filter(df_site, date >= v2_d & date <= v5_d), th)),
+        data.frame(disease = dis, period = "3_開花(V5-R1)",   calc_period_wetness(filter(df_site, date >= v5_d & date <= r1_d), th)),
+        data.frame(disease = dis, period = "4_全期(播種-R1)",  calc_period_wetness(filter(df_site, date >= s_d & date <= r1_d), th))
+      )
+    }) %>% ungroup() %>% mutate(threshold = paste0("SMC_", th_percent))
+  
+  results_list[[as.character(th_percent)]] <- df_wetness_th
+}
+
+df_all_wetness_summary <- bind_rows(results_list)
+write.csv(df_all_wetness_summary, "03_AnalysisOutputs/soil_wetness_indicators_2025.csv", row.names = FALSE, fileEncoding = "CP932")
+
+# 4. 全96パターンの2次多項式回帰分析
+metrics_map <- list("連続過湿日数"="max_cont_wet_days", "合計の過湿日数"="total_wet_days", "平均の水分量"="mean_smc_all", "過湿の強さ×日数"="excess_smc_sum")
+threshold_list <- paste0("SMC_", thresholds * 100)
+period_list <- c("1_初期(播種-V2)", "2_中期(V2-V5)", "3_開花(V5-R1)", "4_全期(播種-R1)")
+
+all_poly_results <- list()
+
+for (th in threshold_list) {
+  for (pr in period_list) {
+    df_sub <- filter(df_all_wetness_summary, threshold == th & period == pr)
+    for (m_label in names(metrics_map)) {
+      col_n <- metrics_map[[m_label]]
+      v_data <- filter(df_sub, !is.na(disease) & !is.na(.data[[col_n]]))
+      
+      if (nrow(v_data) < 4 || var(v_data[[col_n]]) == 0) {
+        r2_val <- NA; adj_r2 <- NA; p_val <- NA
+      } else {
+        fit <- lm(as.formula(paste("disease ~ poly(", col_n, ", 2, raw = TRUE)")), data = v_data)
+        f_stat <- summary(fit)$fstatistic
+        r2_val <- summary(fit)$r.squared
+        adj_r2 <- summary(fit)$adj.r.squared
+        p_val <- if (!is.null(f_stat)) pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE) else NA
+      }
+      all_poly_results[[length(all_poly_results) + 1]] <- data.frame(
+        閾値 = gsub("SMC_", "", th), 時期 = pr, 評価指標 = m_label,
+        R2 = round(r2_val, 4), Adjusted_R2 = round(adj_r2, 4), Model_p_val = round(p_val, 5)
+      )
+    }
+  }
+}
+
+write.csv(bind_rows(all_poly_results), "03_AnalysisOutputs/poly_regression_all_96patterns.csv", row.names = FALSE, fileEncoding = "CP932")
+cat("✅ 過湿指標および回帰分析結果の保存が完了しました: 03_AnalysisOutputs/\n")
