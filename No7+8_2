@@ -1,0 +1,274 @@
+# =========================================================
+# 04_05_relative_wetness_complete_integrated.R
+# 相対閾値の集計 ＋ 2次多項式回帰分析 ＋ ヒートマップ/散布図出力（型合わせ修正版）
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(scales)
+
+# 出力フォルダの準備
+output_dir <- "03_AnalysisOutputs/"
+dir.create(output_dir, showWarnings = FALSE)
+
+# ---------------------------------------------------------
+# 1. 必要データの読み込み（site列の型を数値型に統一）
+# ---------------------------------------------------------
+df_pred <- read.csv("02_ModelOutputs/soil_moisture_pred_4years_full.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    date = as.Date(date), 
+    year = year(date),
+    # siteから数字以外を除去して数値型に統一
+    site = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+df_stages <- read.csv("01_ProcessedData/crop_stages_predicted.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    pred_seeding_date = as.Date(pred_seeding_date),
+    v2_date           = as.Date(v2_date),
+    v5_date           = as.Date(v5_date),
+    r1_date           = as.Date(r1_date),
+    year              = as.numeric(year),
+    # siteから数字以外を除去して数値型に統一
+    site              = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+# 相対閾値対応の過湿指標計算関数
+calc_period_wetness_rel <- function(df_sub, rel_th_ratio, smc_max_site) {
+  if (nrow(df_sub) == 0) {
+    return(data.frame(
+      period_days = 0, max_cont_wet_days = 0, total_wet_days = 0,
+      mean_smc_all = NA, mean_smc_wet = NA, excess_smc_sum = 0
+    ))
+  }
+  
+  th_val <- smc_max_site * rel_th_ratio
+  smc <- df_sub$SMC_pred
+  is_wet <- smc >= th_val
+  rl <- rle(is_wet)
+  
+  data.frame(
+    period_days        = nrow(df_sub),
+    max_cont_wet_days  = if (any(rl$values)) max(rl$lengths[rl$values]) else 0,
+    total_wet_days     = sum(is_wet, na.rm = TRUE),
+    mean_smc_all       = mean(smc, na.rm = TRUE),
+    mean_smc_wet       = if (sum(is_wet) > 0) mean(smc[is_wet], na.rm = TRUE) else NA,
+    excess_smc_sum     = sum(pmax(0, smc - th_val) / (smc_max_site - th_val + 1e-6), na.rm = TRUE)
+  )
+}
+
+# 分析用設定
+rel_thresholds <- c(0.60, 0.70, 0.80, 0.90)
+rel_labels_vec <- c("Rel_60%", "Rel_70%", "Rel_80%", "Rel_90%")
+
+# 評価指標のマッピング
+metric_order <- c("連続過湿日数", "合計の過湿日数", "平均の水分量", "過湿の強さ×日数")
+metrics_map  <- c(
+  "連続過湿日数"   = "max_cont_wet_days", 
+  "合計の過湿日数" = "total_wet_days", 
+  "平均の水分量"   = "mean_smc_all", 
+  "過湿の強さ×日数" = "excess_smc_sum"
+)
+
+period_list  <- c("1_初期(播種-V2)", "2_中期(V2-V5)", "3_開花(V5-R1)", "4_全期(播種-R1)")
+target_years <- intersect(unique(df_pred$year), unique(df_stages$year))
+
+cat("対象年度:", paste(target_years, collapse = ", "), "\n")
+
+# ---------------------------------------------------------
+# 2. メイン処理ループ（年度ごと）
+# ---------------------------------------------------------
+for (y in target_years) {
+  cat(paste0("\n=========================================\n"))
+  cat(paste0("  ", y, "年度の相対閾値パイプラインを実行中...\n"))
+  cat(paste0("=========================================\n"))
+  
+  df_pred_year <- df_pred %>% filter(year == y)
+  
+  # A. 地点ごとのシーズン最大水分量（SMC_max）の算出
+  site_max_smc <- df_pred_year %>%
+    group_by(site) %>%
+    summarise(smc_max_site = max(SMC_pred, na.rm = TRUE), .groups = "drop")
+  
+  # B. 各相対閾値での集計
+  results_list <- list()
+  for (r_th in rel_thresholds) {
+    th_label <- paste0("Rel_", as.integer(r_th * 100), "%")
+    
+    df_wetness_th <- df_pred_year %>%
+      inner_join(df_stages %>% filter(year == y), by = c("year", "site")) %>%
+      left_join(site_max_smc, by = "site") %>%
+      group_by(site) %>%
+      group_modify(~ {
+        df_site <- .x
+        s_d  <- df_site$pred_seeding_date[1]
+        v2_d <- df_site$v2_date[1]
+        v5_d <- df_site$v5_date[1]
+        r1_d <- df_site$r1_date[1]
+        dis  <- if ("disease" %in% names(df_site)) df_site$disease[1] else NA
+        smc_max <- df_site$smc_max_site[1]
+        
+        bind_rows(
+          data.frame(disease = dis, period = "1_初期(播種-V2)", calc_period_wetness_rel(filter(df_site, date >= s_d & date <= v2_d), r_th, smc_max)),
+          data.frame(disease = dis, period = "2_中期(V2-V5)",   calc_period_wetness_rel(filter(df_site, date >= v2_d & date <= v5_d), r_th, smc_max)),
+          data.frame(disease = dis, period = "3_開花(V5-R1)",   calc_period_wetness_rel(filter(df_site, date >= v5_d & date <= r1_d), r_th, smc_max)),
+          data.frame(disease = dis, period = "4_全期(播種-R1)",  calc_period_wetness_rel(filter(df_site, date >= s_d & date <= r1_d), r_th, smc_max))
+        )
+      }) %>% 
+      ungroup() %>% 
+      mutate(threshold = th_label)
+    
+    results_list[[th_label]] <- df_wetness_th
+  }
+  
+  df_wetness_summary <- bind_rows(results_list)
+  write.csv(df_wetness_summary, paste0(output_dir, "soil_wetness_indicators_relative_", y, ".csv"), row.names = FALSE, fileEncoding = "CP932")
+  
+  # C. 2次多項式回帰分析
+  all_poly_results <- list()
+  for (th in rel_labels_vec) {
+    for (pr in period_list) {
+      df_sub <- filter(df_wetness_summary, threshold == th & period == pr)
+      for (m_label in names(metrics_map)) {
+        col_n <- metrics_map[[m_label]]
+        v_data <- filter(df_sub, !is.na(disease) & !is.na(.data[[col_n]]))
+        
+        if (nrow(v_data) < 4 || var(v_data[[col_n]], na.rm = TRUE) == 0) {
+          r2_val <- NA; adj_r2 <- NA; p_val <- NA
+        } else {
+          fit <- lm(as.formula(paste("disease ~ poly(", col_n, ", 2, raw = TRUE)")), data = v_data)
+          f_stat <- summary(fit)$fstatistic
+          r2_val <- summary(fit)$r.squared
+          adj_r2 <- summary(fit)$adj.r.squared
+          p_val  <- if (!is.null(f_stat)) pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE) else NA
+        }
+        
+        all_poly_results[[length(all_poly_results) + 1]] <- data.frame(
+          年度 = y, 閾値 = th, 時期 = pr, 評価指標 = m_label,
+          R2 = round(r2_val, 4), Adjusted_R2 = round(adj_r2, 4), Model_p_val = round(p_val, 5)
+        )
+      }
+    }
+  }
+  
+  df_r2_all <- bind_rows(all_poly_results)
+  write.csv(df_r2_all, paste0(output_dir, "poly_regression_relative_", y, ".csv"), row.names = FALSE, fileEncoding = "CP932")
+  
+  # D. ヒートマップ (R²) の描画
+  df_r2_plot <- df_r2_all %>%
+    mutate(
+      metric    = factor(評価指標, levels = metric_order),
+      threshold = factor(閾値, levels = rel_labels_vec),
+      period    = 時期
+    )
+  
+  max_r2 <- max(df_r2_plot$R2, na.rm = TRUE)
+  color_limit_max <- ifelse(is.na(max_r2) || max_r2 <= 0, 0.25, ceiling(max_r2 * 100) / 100)
+  
+  p_r2_heatmap_large_y <- ggplot(df_r2_plot, aes(x = metric, y = threshold, fill = R2)) +
+    geom_tile(color = "white", linewidth = 0.8) +
+    coord_fixed(ratio = 0.35) + 
+    geom_text(
+      aes(label = ifelse(is.na(R2), "-", sprintf("%.2f", R2))), 
+      color = "black", 
+      size = 4.8, 
+      fontface = "bold"
+    ) +
+    scale_fill_gradientn(
+      colors   = c("#ffffe5", "#fff7bc", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04"),
+      na.value = "gray90", 
+      limits   = c(0, color_limit_max),
+      breaks   = seq(0, color_limit_max, length.out = 5),
+      labels   = number_format(accuracy = 0.01)
+    ) +
+    facet_wrap(~ period, ncol = 2) +
+    labs(
+      title = paste0(y, "年 相対閾値における2次多項式回帰の決定係数 (R²)"),
+      x     = "評価指標",
+      y     = "SMC 相対閾値",
+      fill  = "R²"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 18, hjust = 0.5, margin = margin(b = 10)),
+      strip.background = element_rect(fill = "gray90", color = "black"),
+      strip.text       = element_text(face = "bold", size = 14), 
+      axis.title.y     = element_text(face = "bold", size = 16),
+      axis.text.y      = element_text(size = 13, face = "bold", color = "black"),
+      axis.title.x     = element_text(face = "bold", size = 13),
+      axis.text.x      = element_text(angle = 25, hjust = 1, size = 10.5, face = "bold", color = "black"),
+      legend.title     = element_text(face = "bold", size = 11),
+      legend.text      = element_text(size = 9.5),
+      panel.grid       = element_blank()
+    )
+  
+  heatmap_out_path <- paste0(output_dir, "heatmap_R2_relative_", y, ".png")
+  ggsave(heatmap_out_path, plot = p_r2_heatmap_large_y, width = 12, height = 4.2, dpi = 300)
+  cat(paste0("  [1/2] ヒートマップ保存完了: ", heatmap_out_path, "\n"))
+  
+  # E. 最高 R² の条件による散布図描画
+  best_row <- df_r2_plot %>%
+    filter(!is.na(R2)) %>%
+    arrange(desc(R2)) %>%
+    slice(1)
+  
+  if (nrow(best_row) == 0) next
+  
+  best_period   <- as.character(best_row$period)
+  best_th_str   <- as.character(best_row$閾値)
+  best_m_label  <- as.character(best_row$評価指標)
+  best_col_name <- metrics_map[[best_m_label]]
+  
+  df_target <- df_wetness_summary %>%
+    filter(period == best_period, threshold == best_th_str) %>%
+    filter(!is.na(disease) & !is.na(.data[[best_col_name]]))
+  
+  fit_formula <- as.formula(paste("disease ~ poly(", best_col_name, ", 2, raw = TRUE)"))
+  fit_best    <- lm(fit_formula, data = df_target)
+  fit_sum     <- summary(fit_best)
+  
+  r2_val <- fit_sum$r.squared
+  adj_r2 <- fit_sum$adj.r.squared
+  f_stat <- fit_sum$fstatistic
+  p_val  <- if (!is.null(f_stat)) pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE) else NA
+  
+  p_text <- ifelse(is.na(p_val), "p = NA",
+            ifelse(p_val < 0.001, "p < 0.001", 
+            ifelse(p_val < 0.01,  "p < 0.01", 
+            ifelse(p_val < 0.05,  "p < 0.05", sprintf("p = %.3f", p_val)))))
+  
+  stat_label <- sprintf("R² = %.2f\nAdj. R² = %.2f\n%s", r2_val, adj_r2, p_text)
+  plot_title <- paste0(y, "年 最高精度モデル: 2次多項式 (", best_period, ", ", best_m_label, ", ", best_th_str, ")")
+  
+  p_best_plot_ultra_wide <- ggplot(df_target, aes(x = .data[[best_col_name]], y = disease)) +
+    geom_smooth(
+      method = "lm", formula = y ~ poly(x, 2, raw = TRUE), 
+      color = "#d95f02", fill = "#fdb462", alpha = 0.35, linewidth = 1.6
+    ) +
+    geom_point(color = "#2b8cbe", alpha = 0.75, size = 5.0) +
+    annotate(
+      "label", 
+      x = max(df_target[[best_col_name]], na.rm = TRUE) * 0.78, 
+      y = max(df_target$disease, na.rm = TRUE) * 0.82,
+      label = stat_label, fill = "white", color = "black", size = 6.0, fontface = "bold",
+      label.padding = unit(0.5, "lines"), linewidth = 0.8
+    ) +
+    labs(
+      title = plot_title,
+      x     = paste0(best_m_label, " (相対指標)"),
+      y     = "病気発生率 RCR (%)"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 20, hjust = 0.5, margin = margin(b = 12)),
+      axis.title       = element_text(face = "bold", size = 18),
+      axis.text        = element_text(size = 15, face = "bold", color = "black"),
+      panel.grid.minor = element_blank()
+    )
+  
+  scatter_out_path <- paste0(output_dir, "best_model_plot_relative_", y, ".png")
+  ggsave(scatter_out_path, plot = p_best_plot_ultra_wide, width = 14, height = 3.8, dpi = 300)
+  cat(paste0("  [2/2] 散布図保存完了: ", scatter_out_path, "\n"))
+}
