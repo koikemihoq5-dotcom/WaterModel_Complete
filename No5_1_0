@@ -1,0 +1,68 @@
+library(dplyr)
+library(tidyr)
+
+#==========================================================
+# 0. 気象データ・フォルダ存在確認
+#==========================================================
+if (!exists("weather") && exists("df_weather")) {
+  weather <- df_weather
+}
+
+#==========================================================
+# 1. 2024年・2025年のVstageデータを読み込み＆縦持ち変換
+#==========================================================
+
+# --- 2024年データ ---
+path_2024 <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/2024Vstage.csv"
+
+# colClasses = "character" で全列を文字型として読み込み、型の不一致を防ぎます
+stage_2024 <- read.csv(path_2024, stringsAsFactors = FALSE, colClasses = "character") %>%
+  pivot_longer(
+    cols = starts_with("V_") | starts_with("V0"),
+    names_to = "date_str",
+    values_to = "stage_val"
+  ) %>%
+  mutate(
+    year = 2024,
+    date_clean = gsub("V_?", "", date_str),
+    date = as.Date(paste0("2024-", substr(date_clean, 1, 2), "-", substr(date_clean, 3, 4))),
+    site = as.numeric(sub("_.*$", "", name)),
+    disease = as.numeric(disease)
+  )
+
+# --- 2025年データ ---
+path_2025 <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/2025Vstage.csv"
+
+stage_2025 <- read.csv(path_2025, stringsAsFactors = FALSE, colClasses = "character") %>%
+  pivot_longer(
+    cols = starts_with("V_") | starts_with("V0"),
+    names_to = "date_str",
+    values_to = "stage_val"
+  ) %>%
+  mutate(
+    year = 2025,
+    date_clean = gsub("V_?", "", date_str),
+    date = as.Date(paste0("2025-", substr(date_clean, 1, 2), "-", substr(date_clean, 3, 4))),
+    site = as.numeric(sub("_.*$", "", name)),
+    disease = as.numeric(disease)
+  )
+
+#==========================================================
+# 2. データの結合とステージ数値化 (stage_all の作成)
+#==========================================================
+
+stage_all <- bind_rows(stage_2024, stage_2025) %>%
+  mutate(
+    # R1 -> 11, R2 -> 12 などの変換
+    stage = case_when(
+      stage_val == "R1" ~ 11,
+      stage_val == "R2" ~ 12,
+      TRUE ~ as.numeric(stage_val)
+    )
+  ) %>%
+  filter(!is.na(stage)) %>%
+  select(name, site, year, date, stage, disease)
+
+cat("--- stage_all の作成完了 ---\n")
+print(head(stage_all))
+
