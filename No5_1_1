@@ -114,69 +114,52 @@ seed_est <- seed_est %>%
 #==========================================================
 
 find_date_from_gdd <- function(targetGDD, yr){
-
-    w <- weather %>%
-        filter(year == yr)
-
-    targetGDD <- max(targetGDD,0)
-
-    idx <- which.min(
-        abs(w$cumGDD-targetGDD)
-    )
-
-    w$date[idx]
-
+  w <- weather %>% filter(year == yr)
+  targetGDD <- max(targetGDD, 0)
+  idx <- which.min(abs(w$cumGDD - targetGDD))
+  w$date[idx]
 }
 
-seed_est$seeding_date <-
-
-as.Date(
-    mapply(
-        find_date_from_gdd,
-        seed_est$seeding_GDD,
-        seed_est$year
-    ),
-    origin="1970-01-01"
+seed_est$seeding_date <- as.Date(
+  mapply(
+    find_date_from_gdd,
+    seed_est$seeding_GDD,
+    seed_est$year
+  ),
+  origin = "1970-01-01"
 )
 
 #==========================================================
 # disease結合
 #==========================================================
 
-if(length(list_disease)>0){
-
-    disease_all <- bind_rows(list_disease) %>%
-        distinct(site,year,.keep_all=TRUE)
-
-
-    seed_est <-
-
-        left_join(
-            seed_est,
-            disease_all,
-            by=c("site","year")
-        )
-
+if (exists("list_disease") && length(list_disease) > 0) {
+  disease_all <- bind_rows(list_disease) %>%
+    distinct(site, year, .keep_all = TRUE)
+  
+  seed_est <- left_join(
+    seed_est,
+    disease_all,
+    by = c("site", "year")
+  )
 }
+
 #==========================================================
 # 11. 保存
 #==========================================================
 
+if (!dir.exists("01_ProcessedData")) {
+  dir.create("01_ProcessedData", recursive = TRUE)
+}
+
 write.csv(
-
-seed_est,
-
-"01_ProcessedData/seeding_date_estimated_GDD.csv",
-
-row.names=FALSE,
-
-fileEncoding="CP932"
-
+  seed_est,
+  "01_ProcessedData/seeding_date_estimated_GDD.csv",
+  row.names = FALSE,
+  fileEncoding = "CP932"
 )
 
 summary(seed_est$seeding_GDD)
-
 hist(seed_est$seeding_GDD)
-
 head(seed_est)
 cat("\n播種日推定完了\n")
