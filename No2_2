@@ -21,6 +21,9 @@ calc_solar_rad <- function(doy, lat_deg, sunshine_hours) {
     return(Rs)
 }
 
+# 作業ディレクトリをベースフォルダに設定
+setwd("C:/Users/koike/OneDrive/Desktop/Water5")
+
 # 2. アメダス raw データの読み込み
 data_raw <- read.csv(
     "00_RawData/Amedas.csv",
