@@ -1,0 +1,41 @@
+# =========================================================
+# 修正版：実用的な「飽和領域（14日〜）」を示すコード
+# =========================================================
+
+# 2025年の実質的なピーク・上限値（例：14.5日）を閾値として設定
+threshold_x <- 14.5  # 2025年の過湿上限＆リスク高止まり領域の開始点
+
+p_comp_fixed <- ggplot(df_combined, aes(x = total_wet_days, y = disease, color = year)) +
+  # 2025年の回帰曲線
+  geom_smooth(data = filter(df_combined, year == "2025年（平年）"),
+              method = "lm", formula = y ~ poly(x, 2, raw = TRUE),
+              color = "#2b8cbe", fill = "#a6bddb", alpha = 0.3, linewidth = 1.2) +
+  # プロット
+  geom_point(size = 4, alpha = 0.8) +
+  # 14.5日の位置に飽和領域の境界線（赤破線）を引く
+  geom_vline(xintercept = threshold_x, color = "#e41a1c", linetype = "dashed", linewidth = 1.2) +
+  # アノテーション
+  annotate("text", x = threshold_x - 0.3, y = 90,
+           label = "2025年のリスク上限\n(約14.5日)",
+           color = "#2b8cbe", fontface = "bold", hjust = 1, size = 4.5) +
+  annotate("text", x = threshold_x + 0.3, y = 90,
+           label = "2024年の過湿集中領域\n(高止まり・無相関)",
+           color = "#e41a1c", fontface = "bold", hjust = 0, size = 4.5) +
+  scale_color_manual(values = c("2024年（過湿年）" = "#e41a1c", "2025年（平年）" = "#2b8cbe")) +
+  labs(
+    title = "初期過湿日数とダイズ黒根腐病（RCR）発生率の年次比較",
+    subtitle = "2025年は14〜15日にかけて増加傾向を示す一方、2024年は13日以上の高過湿領域に集中し高止まりした",
+    x = "初期（播種–V2）における合計過湿日数 (日)",
+    y = "RCR 発生率 (%)",
+    color = "調査年度"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 15, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray30", margin = margin(b = 10)),
+    axis.title    = element_text(face = "bold", size = 13),
+    axis.text     = element_text(size = 12, face = "bold", color = "black"),
+    legend.position = "top"
+  )
+
+ggsave(paste0(output_dir, "RCR_threshold_fixed.png"), plot = p_comp_fixed, width = 10, height = 6, dpi = 300)
