@@ -84,15 +84,46 @@ mutate(
 ungroup()
 
 
-#----------------------------------------------------------
-# 必要列だけ保存
-#----------------------------------------------------------
+library(dplyr)
 
-crop_stages_predicted <-
+#==========================================================
+# disease 列の復元（seed_est に disease を結合）
+#==========================================================
+# stage_all から site, year ごとの disease を抽出して seed_est に追加
+disease_summary <- stage_all %>%
+  group_by(site, year) %>%
+  summarise(disease = mean(disease, na.rm = TRUE), .groups = "drop")
 
-crop_stage_predicted %>%
+seed_est <- seed_est %>%
+  select(-any_of("disease")) %>% # 重複防止のため一度削除
+  left_join(disease_summary, by = c("site", "year"))
 
-select(
+#==========================================================
+# ステージ日推定
+#==========================================================
+crop_stage_predicted <- seed_est %>%
+  mutate(
+    # 播種日
+    pred_seeding_date = as.Date(seeding_date),
+    
+    # 到達GDD
+    V2_target_GDD = seeding_GDD + V2_required_GDD,
+    V5_target_GDD = seeding_GDD + V5_required_GDD,
+    R1_target_GDD = seeding_GDD + R1_required_GDD
+  ) %>%
+  rowwise() %>%
+  mutate(
+    v2_date = find_date_from_gdd(V2_target_GDD, year),
+    v5_date = find_date_from_gdd(V5_target_GDD, year),
+    r1_date = find_date_from_gdd(R1_target_GDD, year)
+  ) %>%
+  ungroup()
+
+#==========================================================
+# 必要列だけ抽出・保存
+#==========================================================
+crop_stages_predicted <- crop_stage_predicted %>%
+  select(
     site,
     year,
     pred_seeding_date,
@@ -100,23 +131,19 @@ select(
     v5_date,
     r1_date,
     disease
-)
+  )
 
-
-print(head(crop_stages_predicted))
-
+# 保存
+if (!dir.exists("01_ProcessedData")) {
+  dir.create("01_ProcessedData", recursive = TRUE)
+}
 
 write.csv(
-
-    crop_stages_predicted,
-
-    "01_ProcessedData/crop_stages_predicted.csv",
-
-    row.names = FALSE,
-
-    fileEncoding="CP932"
-
+  crop_stages_predicted,
+  "01_ProcessedData/crop_stages_predicted.csv",
+  row.names = FALSE,
+  fileEncoding = "CP932"
 )
 
-
-cat("\n播種-V2-V5-R1推定完了\n")
+cat("\n--- ステージ推定日および disease の抽出・保存が完了しました！ ---\n")
+print(head(crop_stages_predicted))
