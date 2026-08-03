@@ -1,0 +1,26 @@
+#初期設定
+install.packages("devtools")
+install.packages("sf") # shapeデータの利用のため
+install.packages('https://cran.r-project.org/src/contrib/Archive/tidync/tidync_0.3.0.tar.gz', repos=NULL, type='source') # NetCDFデータの利用のため
+devtools::install_github("uribo/jpndistrict") # 国内の行政区画データの利用のため
+
+devtools::install_github("KeachMurakami/agrmesh")
+
+#library(agrmesh)
+#> Loading required package: tidync
+#> 
+#> ── WELCOME to R-AMGSDS interface (ver.0.1.1001) ────────────────────────────────
+#> ℹ Please consider to cite the dataset and this pacakge in your publications, see citation('agrmesh')
+#> 農研機構は、農業分野や他の分野における研究・開発・教育・試用を目的とする者に、審査に基づきメッシュ農業気象データ（以下、「このデータ」と呼ぶ。）の利用を許可します。
+#> 特に許可されない限り、このデータを他に転載したり第三者に提供したりすることはできません。
+#> このデータを利用して作成した情報を販売することはできません。
+#> 利用者は、利用期間の終了後、速やかに利用報告をすることとします。
+#> 農研機構は、利用者がこのデータの利用によって生じた結果、ならびに、このデータが利用できないことによって生じた結果について、いかなる責任も負いません。
+#> このデータを利用して得た成果等を公表する場合は、「農研機構メッシュ農業気象データ（The
+#> Agro-Meteorological Grid Square Data,
+#> NARO）」とRパッケージ「agrmesh」を利用した旨を明記してください。
+#> ✔ Switched to oracle mode.
+amgsds_config()
+#> ✔ Passed authentification
+#URLとDevice codeが出てきたら、URLをクリックして二段階認証を行う。
+
