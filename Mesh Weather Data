@@ -34,3 +34,67 @@ download.file(url, destfile = output_path, mode = "wb")
 
 cat("ダウンロードが完了しました:", output_path)
 
+#==================================================
+#検証する
+#==================================================
+library(sf)
+library(agrmesh)
+library(dplyr)
+library(purrr)
+
+# --------------------------------------------------
+# 1. GPXファイルの読み込みと座標データの抽出
+# --------------------------------------------------
+# GPXファイルのパス（環境に合わせて変更してください）
+gpx_path <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/your_points.gpx"
+
+# GPX内のウェイポイント（地点データ）を読み込み
+gpx_data <- st_read(gpx_path, layer = "waypoints")
+
+# 緯度・経度・地点名を抽出してテーブル化
+sites_df <- gpx_data %>%
+  mutate(
+    lon = st_coordinates(.)[, 1],
+    lat = st_coordinates(.)[, 2],
+    site_name = if ("name" %in% names(.)) name else paste0("site_", row_number()),
+    site_id = row_number() # 1, 2, 3... の連番ID
+  ) %>%
+  st_drop_geometry() %>%
+  select(site_id, site_name, lat, lon)
+
+print(sites_df) # 読み込まれた地点一覧を確認
+
+# --------------------------------------------------
+# 2. 気象要素と期間の設定
+# --------------------------------------------------
+target_elements <- c("TMP_mea", "TMP_max", "TMP_min", "APCP", "GSR")
+target_years <- 2023:2025
+
+# --------------------------------------------------
+# 3. 全地点 × 2023-2025年（6/1〜9/1）を一括取得
+# --------------------------------------------------
+weather_all_sites <- map_dfr(target_years, function(yr) {
+  start_date <- as.Date(sprintf("%d-06-01", yr))
+  end_date   <- as.Date(sprintf("%d-09-01", yr))
+  
+  # 全地点のデータを一気に取得
+  fetch_amgsds(
+    lat = sites_df$lat,
+    lon = sites_df$lon,
+    time = c(start_date, end_date),
+    elements = target_elements
+  )
+}) %>%
+  # 地点番号（site_id）をもとにGPXの地点名を結合
+  left_join(sites_df, by = "site_id")
+
+# --------------------------------------------------
+# 4. CSV保存
+# --------------------------------------------------
+output_dir <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData"
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+output_path <- file.path(output_dir, "test.csv")
+write.csv(weather_all_sites, file = output_path, row.names = FALSE, fileEncoding = "CP932")
+
+cat("完了しました！保存先:", output_path)
