@@ -34,67 +34,132 @@ download.file(url, destfile = output_path, mode = "wb")
 
 cat("ダウンロードが完了しました:", output_path)
 
-#==================================================
-#検証する
-#==================================================
+#===================================================
 library(sf)
 library(agrmesh)
 library(dplyr)
 library(purrr)
 
 # --------------------------------------------------
-# 1. GPXファイルの読み込みと座標データの抽出
+# 1. 2025年の設定
 # --------------------------------------------------
-# GPXファイルのパス（環境に合わせて変更してください）
-gpx_path <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/your_points.gpx"
+target_year  <- 2025
+gpx_path     <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/294A_2025_wpt.gpx"
+mapping_path <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/2025Code.csv" # 👈提供いただいた対比表CSV
 
-# GPX内のウェイポイント（地点データ）を読み込み
-gpx_data <- st_read(gpx_path, layer = "waypoints")
+start_date  <- as.Date("2025-06-01")
+end_date    <- as.Date("2025-09-01")
 
-# 緯度・経度・地点名を抽出してテーブル化
+target_elements <- c("TMP_mea", "TMP_max", "TMP_min", "APCP", "GSR")
+
+# --------------------------------------------------
+# 2. 対比表（2025Code.csv）の読み込み
+# --------------------------------------------------
+# タブ区切りまたはカンマ区切りの両方に対応できるよう read.csv/read.delim 調整
+mapping_df <- read.csv(mapping_path, fileEncoding = "CP932", check.names = FALSE)
+
+# もし1列に繋がって読み込まれた場合のタブ区切り対策
+if (ncol(mapping_df) == 1) {
+  mapping_df <- read.delim(mapping_path, fileEncoding = "CP932", check.names = FALSE)
+}
+
+# 列名の表記揺れ対策（b_pointNum と name を抽出）
+mapping_df <- mapping_df %>% 
+  rename(
+    b_pointNum = grep("b_pointNum", names(.), value = TRUE)[1],
+    plot_name  = grep("name", names(.), value = TRUE)[1]
+  ) %>% 
+  mutate(b_pointNum = as.character(b_pointNum))
+
+# --------------------------------------------------
+# 3. GPXデータの読み込み & 区画Noの結合
+# --------------------------------------------------
+gpx_data <- st_read(gpx_path, layer = "waypoints", quiet = TRUE)
+
 sites_df <- gpx_data %>%
   mutate(
     lon = st_coordinates(.)[, 1],
     lat = st_coordinates(.)[, 2],
-    site_name = if ("name" %in% names(.)) name else paste0("site_", row_number()),
-    site_id = row_number() # 1, 2, 3... の連番ID
+    
+    # GPXから d_pointNumber を取得（無ければ row_number）
+    d_pointNumber = if ("d_pointNumber" %in% names(.)) as.character(d_pointNumber) 
+                    else as.character(row_number()),
+    site_id = row_number()
   ) %>%
   st_drop_geometry() %>%
-  select(site_id, site_name, lat, lon)
+  # d_pointNumber と b_pointNum をキーにして結合
+  left_join(mapping_df, by = c("d_pointNumber" = "b_pointNum")) %>% 
+  # site_name に区画名（name列）をセット（対比表に無ければ d_pointNumber を使う）
+  mutate(
+    site_name = ifelse(!is.na(plot_name) & plot_name != "", plot_name, d_pointNumber)
+  ) %>%
+  select(site_id, d_pointNumber, site_name, lat, lon)
 
-print(sites_df) # 読み込まれた地点一覧を確認
+total_sites <- nrow(sites_df)
 
 # --------------------------------------------------
-# 2. 気象要素と期間の設定
+# 4. 10地点ずつの分割 ＆ エラー自動リカバリ取得
 # --------------------------------------------------
-target_elements <- c("TMP_mea", "TMP_max", "TMP_min", "APCP", "GSR")
-target_years <- 2023:2025
+chunk_size  <- 10
+site_chunks <- split(sites_df, ceiling(seq_len(total_sites) / chunk_size))
 
-# --------------------------------------------------
-# 3. 全地点 × 2023-2025年（6/1〜9/1）を一括取得
-# --------------------------------------------------
-weather_all_sites <- map_dfr(target_years, function(yr) {
-  start_date <- as.Date(sprintf("%d-06-01", yr))
-  end_date   <- as.Date(sprintf("%d-09-01", yr))
+cat(sprintf("全 %d 地点を %d グループに分けて取得します...\n", total_sites, length(site_chunks)))
+
+weather_2025_list <- list()
+
+for (i in seq_along(site_chunks)) {
+  chunk_df <- site_chunks[[i]]
+  cat(sprintf("\n--- [グループ %d / %d] 取得中 --- \n", i, length(site_chunks)))
   
-  # 全地点のデータを一気に取得
-  fetch_amgsds(
-    lat = sites_df$lat,
-    lon = sites_df$lon,
-    time = c(start_date, end_date),
-    elements = target_elements
-  )
-}) %>%
-  # 地点番号（site_id）をもとにGPXの地点名を結合
-  left_join(sites_df, by = "site_id")
+  chunk_res <- pmap_dfr(chunk_df, function(site_id, d_pointNumber, site_name, lat, lon) {
+    
+    res <- tryCatch({
+      fetch_amgsds(
+        lat = lat,
+        lon = lon,
+        time = c(start_date, end_date),
+        elements = target_elements
+      )
+    }, error = function(e) {
+      cat(sprintf("\n⚠️ 地点 %s で認証切断を検知。再認証を行います...\n", site_name))
+      amgsds_config()
+      
+      fetch_amgsds(
+        lat = lat,
+        lon = lon,
+        time = c(start_date, end_date),
+        elements = target_elements
+      )
+    })
+    
+    percent <- round((site_id / total_sites) * 100)
+    cat(sprintf("\r[進捗: %3d%%] %d / %d 地点完了 (現在: %-12s)", percent, site_id, total_sites, site_name))
+    flush.console()
+    
+    res %>% 
+      mutate(
+        year = target_year,
+        site_id = site_id,
+        d_pointNumber = d_pointNumber, # 番号（1, 2, 3...）
+        site_name = site_name          # 区画名（107_5, A, 108_4...）
+      )
+  })
+  
+  weather_2025_list[[i]] <- chunk_res
+}
+
+cat("\n\n全地点の取得が完了しました。データを結合中...\n")
+
+weather_2025 <- bind_rows(weather_2025_list) %>% 
+  select(year, site_id, d_pointNumber, site_name, everything())
 
 # --------------------------------------------------
-# 4. CSV保存
+# 5. CSV保存
 # --------------------------------------------------
 output_dir <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData"
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
-output_path <- file.path(output_dir, "test.csv")
-write.csv(weather_all_sites, file = output_path, row.names = FALSE, fileEncoding = "CP932")
+output_path <- file.path(output_dir, "test_2025.csv")
+write.csv(weather_2025, file = output_path, row.names = FALSE, fileEncoding = "CP932")
 
-cat("完了しました！保存先:", output_path)
+cat("🎉 2025年分の取得と保存が完了しました！\n保存先:", output_path)
