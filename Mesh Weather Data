@@ -24,3 +24,13 @@ amgsds_config()
 #> ✔ Passed authentification
 #URLとDevice codeが出てきたら、URLをクリックして二段階認証を行う。
 
+#メッシュ番号を調べる(Web上でうまく動かない場合のダウンロード方法)
+# 保存先URLとローカルの保存パスを指定
+url <- "https://amu.rd.naro.go.jp/wiki_open/lib/exe/fetch.php?media=wiki:about:mapl_ver2.1.html"
+output_path <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/mapl_ver2.1.html"
+
+# ファイルをダウンロード
+download.file(url, destfile = output_path, mode = "wb")
+
+cat("ダウンロードが完了しました:", output_path)
+
