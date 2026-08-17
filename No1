@@ -3,7 +3,7 @@
 # =========================================================
 
 # ベースフォルダ
-base_dir <- "C:/Users/koike/OneDrive/Desktop/Water2"
+base_dir <- "C:/Users/koike/OneDrive/Desktop/Water5"
 
 # Water2フォルダが存在しなければ作成
 if (!dir.exists(base_dir)) {
