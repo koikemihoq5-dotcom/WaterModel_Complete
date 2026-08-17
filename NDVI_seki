@@ -1,0 +1,258 @@
+# =========================================================
+# 04_05_relative_wetness_complete_integrated.R
+# 相対閾値集計 ＋ 交互作用重回帰分析 ＆ 結合キー修正版
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(scales)
+
+# 出力フォルダの準備
+output_dir <- paste0(getwd(), "/03_AnalysisOutputs/")
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+}
+cat(paste0("保存先フォルダ: ", output_dir, "\n"))
+
+# ---------------------------------------------------------
+# 1. 必要データの読み込み
+# ---------------------------------------------------------
+df_pred <- read.csv("02_ModelOutputs/soil_moisture_pred_4years_full.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    date = as.Date(date), 
+    year = ifelse(!is.na(date), year(date), as.numeric(year)),
+    site = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+df_stages <- read.csv("01_ProcessedData/crop_stages_predicted.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    pred_seeding_date = as.Date(pred_seeding_date),
+    v2_date           = as.Date(v2_date),
+    v5_date           = as.Date(v5_date),
+    r1_date           = as.Date(r1_date),
+    # pred_seeding_date から年度を取得し、無ければ既存の year 列を使用
+    calc_year         = ifelse(!is.na(pred_seeding_date), year(pred_seeding_date), NA),
+    year              = ifelse(!is.na(calc_year), calc_year, as.numeric(year)),
+    site              = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+# Vstage.csv から植生指数および disease の読み込み
+path_2024 <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/2024Vstage.csv"
+path_2025 <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData/2025Vstage.csv"
+
+read_vstage_data <- function(file_path, target_year) {
+  if (!file.exists(file_path)) {
+    cat(paste0("⚠️ ファイルが見つかりません: ", file_path, "\n"))
+    return(NULL)
+  }
+  read.csv(file_path, stringsAsFactors = FALSE) %>%
+    mutate(
+      year = target_year,
+      site = as.numeric(gsub("[^0-9]", "", as.character(name))),
+      disease = as.numeric(disease),
+      NDVI = as.numeric(NDVI),
+      SAVI = as.numeric(SAVI),
+      NDRE = as.numeric(NDRE)
+    ) %>%
+    select(site, year, disease_vstage = disease, NDVI, SAVI, NDRE) %>%
+    distinct(site, year, .keep_all = TRUE)
+}
+
+df_vi_all <- bind_rows(
+  read_vstage_data(path_2024, 2024),
+  read_vstage_data(path_2025, 2025)
+)
+
+# 相対閾値対応の過湿指標計算関数
+calc_period_wetness_rel <- function(df_sub, rel_th_ratio, smc_max_site) {
+  if (nrow(df_sub) == 0) {
+    return(data.frame(
+      period_days = 0, max_cont_wet_days = 0, total_wet_days = 0,
+      mean_smc_all = NA, mean_smc_wet = NA, excess_smc_sum = 0
+    ))
+  }
+  
+  th_val <- smc_max_site * rel_th_ratio
+  smc <- df_sub$SMC_pred
+  is_wet <- smc >= th_val
+  rl <- rle(is_wet)
+  
+  data.frame(
+    period_days        = nrow(df_sub),
+    max_cont_wet_days  = if (any(rl$values)) max(rl$lengths[rl$values]) else 0,
+    total_wet_days     = sum(is_wet, na.rm = TRUE),
+    mean_smc_all       = mean(smc, na.rm = TRUE),
+    mean_smc_wet       = if (sum(is_wet) > 0) mean(smc[is_wet], na.rm = TRUE) else NA,
+    excess_smc_sum     = sum(pmax(0, smc - th_val) / (smc_max_site - th_val + 1e-6), na.rm = TRUE)
+  )
+}
+
+# 設定
+rel_thresholds <- c(0.60, 0.70, 0.80, 0.90)
+rel_labels_vec <- c("Rel_60%", "Rel_70%", "Rel_80%", "Rel_90%")
+
+metric_order <- c("連続過湿日数", "合計の過湿日数", "平均の水分量", "過湿の強さ×日数")
+metrics_map  <- c(
+  "連続過湿日数"     = "max_cont_wet_days", 
+  "合計の過湿日数"   = "total_wet_days", 
+  "平均の水分量"     = "mean_smc_all", 
+  "過湿の強さ×日数" = "excess_smc_sum"
+)
+
+period_list  <- c("1_初期(播種-V2)", "2_中期(V2-V5)", "3_開花(V5-R1)", "4_全期(播種-R1)")
+target_years <- c(2024, 2025)
+vi_list      <- c("NDVI", "SAVI", "NDRE")
+
+# ---------------------------------------------------------
+# 2. メイン処理ループ
+# ---------------------------------------------------------
+for (y in target_years) {
+  cat(paste0("\n=========================================\n"))
+  cat(paste0("   ", y, "年度の相対閾値パイプラインを実行中...\n"))
+  cat(paste0("=========================================\n"))
+  
+  df_pred_year <- df_pred %>% filter(year == y)
+  df_stages_year <- df_stages %>% filter(year == y)
+  
+  cat(paste0("  - df_pred 件数: ", nrow(df_pred_year), "\n"))
+  cat(paste0("  - df_stages 件数: ", nrow(df_stages_year), "\n"))
+  
+  if (nrow(df_pred_year) == 0 || nrow(df_stages_year) == 0) {
+    cat(paste0(" ❌ エラー: ", y, "年のデータが抽出できませんでした。処理をスキップします。\n"))
+    next
+  }
+  
+  site_max_smc <- df_pred_year %>%
+    group_by(site) %>%
+    summarise(smc_max_site = max(SMC_pred, na.rm = TRUE), .groups = "drop")
+  
+  results_list <- list()
+  for (r_th in rel_thresholds) {
+    th_label <- paste0("Rel_", as.integer(r_th * 100), "%")
+    
+    # 修正ポイント: あらかじめ年度で絞り込んであるため site のみで安全に結合
+    df_wetness_th <- df_pred_year %>%
+      inner_join(df_stages_year %>% select(-any_of("year")), by = "site") %>%
+      left_join(site_max_smc, by = "site") %>%
+      group_by(site) %>%
+      group_modify(~ {
+        df_site <- .x
+        s_d  <- df_site$pred_seeding_date[1]
+        v2_d <- df_site$v2_date[1]
+        v5_d <- df_site$v5_date[1]
+        r1_d <- df_site$r1_date[1]
+        dis  <- if ("disease" %in% names(df_site)) df_site$disease[1] else NA
+        smc_max <- df_site$smc_max_site[1]
+        
+        bind_rows(
+          data.frame(disease = dis, period = "1_初期(播種-V2)", calc_period_wetness_rel(filter(df_site, date >= s_d & date <= v2_d), r_th, smc_max)),
+          data.frame(disease = dis, period = "2_中期(V2-V5)",   calc_period_wetness_rel(filter(df_site, date >= v2_d & date <= v5_d), r_th, smc_max)),
+          data.frame(disease = dis, period = "3_開花(V5-R1)",   calc_period_wetness_rel(filter(df_site, date >= v5_d & date <= r1_d), r_th, smc_max)),
+          data.frame(disease = dis, period = "4_全期(播種-R1)",  calc_period_wetness_rel(filter(df_site, date >= s_d & date <= r1_d), r_th, smc_max))
+        )
+      }) %>% 
+      ungroup() %>% 
+      mutate(threshold = th_label, year = y)
+    
+    results_list[[th_label]] <- df_wetness_th
+  }
+  
+  df_wetness_summary <- bind_rows(results_list) %>%
+    mutate(site = as.numeric(site)) %>%
+    left_join(df_vi_all %>% filter(year == y), by = c("site", "year")) %>%
+    mutate(disease = ifelse(is.na(disease_vstage), disease, disease_vstage))
+  
+  csv_out_path <- paste0(output_dir, "soil_wetness_indicators_relative_", y, ".csv")
+  write.csv(df_wetness_summary, csv_out_path, row.names = FALSE, fileEncoding = "CP932")
+  
+  # ---------------------------------------------------------
+  # C & D. 重回帰・ヒートマップ出力
+  # ---------------------------------------------------------
+  for (vi_name in vi_list) {
+    cat(paste0("  --> [解析中] ", y, "年 - 指数: ", vi_name, "...\n"))
+    
+    all_poly_results <- list()
+    for (th in rel_labels_vec) {
+      for (pr in period_list) {
+        df_sub <- filter(df_wetness_summary, threshold == th & period == pr)
+        
+        for (m_label in names(metrics_map)) {
+          col_n <- metrics_map[[m_label]]
+          v_data <- filter(df_sub, !is.na(disease) & !is.na(.data[[col_n]]) & !is.na(.data[[vi_name]]))
+          
+          if (nrow(v_data) < 5 || var(v_data[[col_n]], na.rm = TRUE) == 0 || var(v_data[[vi_name]], na.rm = TRUE) == 0) {
+            r2_val <- NA; adj_r2 <- NA; p_val <- NA
+          } else {
+            fit_formula <- as.formula(paste0("disease ~ poly(", col_n, ", 2, raw = TRUE) * ", vi_name))
+            fit <- lm(fit_formula, data = v_data)
+            
+            f_stat <- summary(fit)$fstatistic
+            r2_val <- summary(fit)$r.squared
+            adj_r2 <- summary(fit)$adj.r.squared
+            p_val  <- if (!is.null(f_stat)) pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE) else NA
+          }
+          
+          all_poly_results[[length(all_poly_results) + 1]] <- data.frame(
+            年度 = y, 閾値 = th, 時期 = pr, 評価指標 = m_label, 植生指数 = vi_name,
+            R2 = round(r2_val, 4), Adjusted_R2 = round(adj_r2, 4), Model_p_val = round(p_val, 5)
+          )
+        }
+      }
+    }
+    
+    df_r2_all <- bind_rows(all_poly_results)
+    
+    df_r2_plot <- df_r2_all %>%
+      mutate(
+        metric    = factor(評価指標, levels = metric_order),
+        threshold = factor(閾値, levels = rel_labels_vec),
+        period    = 時期
+      )
+    
+    max_r2 <- max(df_r2_plot$R2, na.rm = TRUE)
+    color_limit_max <- ifelse(is.na(max_r2) || max_r2 <= 0, 0.25, ceiling(max_r2 * 100) / 100)
+    
+    p_r2_heatmap <- ggplot(df_r2_plot, aes(x = metric, y = threshold, fill = R2)) +
+      geom_tile(color = "white", linewidth = 0.8) +
+      coord_fixed(ratio = 0.35) + 
+      geom_text(
+        aes(label = ifelse(is.na(R2), "-", sprintf("%.2f", R2))), 
+        color = "black", size = 4.8, fontface = "bold"
+      ) +
+      scale_fill_gradientn(
+        colors   = c("#ffffe5", "#fff7bc", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04"),
+        na.value = "gray90", 
+        limits   = c(0, color_limit_max),
+        breaks   = seq(0, color_limit_max, length.out = 5),
+        labels   = number_format(accuracy = 0.01)
+      ) +
+      facet_wrap(~ period, ncol = 2) +
+      labs(
+        title = paste0(y, "年 交互作用重回帰 (R²) [過湿指標 × ", vi_name, "]"),
+        x     = "評価指標",
+        y     = "SMC 相対閾値",
+        fill  = "R²"
+      ) +
+      theme_bw(base_size = 12) +
+      theme(
+        plot.title       = element_text(face = "bold", size = 18, hjust = 0.5, margin = margin(b = 10)),
+        strip.background = element_rect(fill = "gray90", color = "black"),
+        strip.text       = element_text(face = "bold", size = 14), 
+        axis.title.y     = element_text(face = "bold", size = 16),
+        axis.text.y      = element_text(size = 13, face = "bold", color = "black"),
+        axis.title.x     = element_text(face = "bold", size = 13),
+        axis.text.x      = element_text(angle = 25, hjust = 1, size = 10.5, face = "bold", color = "black"),
+        legend.title     = element_text(face = "bold", size = 11),
+        legend.text      = element_text(size = 9.5),
+        panel.grid       = element_blank()
+      )
+    
+    heatmap_out_path <- paste0(output_dir, "heatmap_R2_interaction_", vi_name, "_", y, ".png")
+    ggsave(heatmap_out_path, plot = p_r2_heatmap, width = 12, height = 4.2, dpi = 300)
+    cat(paste0("  ✅ [保存完了] ", heatmap_out_path, "\n"))
+  }
+}
+
+cat("\n🎉 全処理が正常終了しました！\n")
