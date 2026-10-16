@@ -1,0 +1,102 @@
+# =========================================================
+# Fetch_Mesh_Weather_SinglePoint.R
+# 代表地点（北緯38°13'21.84", 東経140°58'38.68"）の
+# 2024-2026年 メッシュ気象データ（6/1〜9/20）自動取得・整形スクリプト
+# =========================================================
+
+library(sf)
+library(tidync)
+library(agrmesh)
+library(dplyr)
+library(lubridate)
+
+# 1. 農研機構メッシュデータの認証設定
+amgsds_config()
+# ※ コンソールに表示されるURLとDevice Codeを用いてブラウザで認証を行ってください
+
+
+# ---------------------------------------------------------
+# 2. 設定パラメータ
+# ---------------------------------------------------------
+# 位置情報（度分秒から十進法へ変換済み）せんだい荒浜事務所
+# 北緯 38度13分21.84秒 -> 38 + 13/60 + 21.84/3600 = 38.222733
+# 東経 140度58分38.68秒 -> 140 + 58/60 + 38.68/3600 = 140.977411
+target_lat <- 38.222733
+target_lon <- 140.977411
+
+target_years <- c(2024, 2025, 2026)
+target_elements <- c("APCP", "GSR", "TMP_mea", "TMP_max", "TMP_min")
+
+all_weather_list <- list()
+
+# ---------------------------------------------------------
+# 3. 2024年〜2026年の気象データ取得ループ
+# ---------------------------------------------------------
+for (yr in target_years) {
+  cat(sprintf("\n📡 %d 年のメッシュ気象データを取得中 (06/01 〜 09/20)...", yr))
+  
+  s_date <- as.Date(paste0(yr, "-06-01"))
+  e_date <- as.Date(paste0(yr, "-09-20"))
+  
+  res <- tryCatch({
+    fetch_amgsds(
+      lat = target_lat,
+      lon = target_lon,
+      time = c(s_date, e_date),
+      elements = target_elements
+    )
+  }, error = function(e) {
+    cat("\n⚠️ 認証切断を検知しました。再認証を行います...\n")
+    amgsds_config()
+    fetch_amgsds(
+      lat = target_lat,
+      lon = target_lon,
+      time = c(s_date, e_date),
+      elements = target_elements
+    )
+  })
+  
+  all_weather_list[[as.character(yr)]] <- res
+}
+
+cat("\n\n✅ 全期間の気象データ取得が完了しました。フォーマットを整形中...\n")
+
+# ---------------------------------------------------------
+# 4. 指定画像と同じ形式へのデータ整形
+# 列構成: Date, Rain, Sun, Temp_Ave, Temp_Max, Temp_Min
+# 日付フォーマット: YYYY/M/D (例: 2023/6/1)
+# ---------------------------------------------------------
+df_raw <- bind_rows(all_weather_list)
+
+df_formatted <- df_raw %>%
+  mutate(
+    date_obj = as.Date(time),
+    # 画像に合わせた YYYY/M/D 表記（ゼロパディングなし）
+    Date     = paste0(year(date_obj), "/", month(date_obj), "/", day(date_obj))
+  ) %>%
+  rename(
+    Rain     = APCP,     # 1日の総降水量 (mm)
+    Sun      = GSR,      # 全球日射量 (MJ/m2 または h 相当)
+    Temp_Ave = TMP_mea,  # 平均気温 (℃)
+    Temp_Max = TMP_max,  # 最高気温 (℃)
+    Temp_Min = TMP_min   # 最低気温 (℃)
+  ) %>%
+  select(Date, Rain, Sun, Temp_Ave, Temp_Max, Temp_Min)
+
+
+# ---------------------------------------------------------
+# 5. CSVファイルの保存処理
+# ---------------------------------------------------------
+output_dir <- "C:/Users/koike/OneDrive/Desktop/Water5/00_RawData"
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+output_path <- file.path(output_dir, "Mesh_Weather.csv")
+
+# Shift-JIS (CP932) エンコーディングで保存
+write.csv(df_formatted, file = output_path, row.names = FALSE, fileEncoding = "CP932")
+
+cat("\n=========================================================\n")
+cat("🎉 指定フォーマットでの保存が完了しました！\n")
+cat("📁 保存ファイル名: Mesh_Weather.csv\n")
+cat("📂 保存先パス:    ", output_path, "\n")
+cat("=========================================================\n")
