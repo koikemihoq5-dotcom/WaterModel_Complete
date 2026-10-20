@@ -1,0 +1,324 @@
+#ハードルベータ回帰 (glmmTMB)
+
+# =========================================================
+# 04_05_relative_wetness_hurdle_beta.R
+# 相対閾値の集計 ＋ ハードルベータ回帰 (glmmTMB) ＋ ヒートマップ ＋ プロット出力
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(scales)
+
+# 必要パッケージの確認＆自動インストール
+required_pkgs <- c("glmmTMB", "car", "emmeans")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+library(glmmTMB)
+
+# 出力フォルダの準備
+output_dir <- "03_AnalysisOutputs_Hurdle/"
+dir.create(output_dir, showWarnings = FALSE)
+
+# ---------------------------------------------------------
+# 1. 必要データの読み込み＆型統一
+# ---------------------------------------------------------
+df_pred <- read.csv("02_ModelOutputs/soil_moisture_pred_4years_full.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    date = as.Date(date), 
+    year = year(date),
+    site = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+df_stages <- read.csv("01_ProcessedData/crop_stages_predicted.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    pred_seeding_date = as.Date(pred_seeding_date),
+    v2_date           = as.Date(v2_date),
+    v5_date           = as.Date(v5_date),
+    r1_date           = as.Date(r1_date),
+    year              = as.numeric(year),
+    site              = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+# 推定SMCの全期間日別平均最大値（100%基準値）を自動計算
+overall_peak_smc <- df_pred %>%
+  group_by(date) %>%
+  summarise(daily_mean_smc = mean(SMC_pred, na.rm = TRUE), .groups = "drop") %>%
+  summarise(max_peak = max(daily_mean_smc, na.rm = TRUE)) %>%
+  pull(max_peak)
+
+cat(sprintf("\n📊 自動検出された推定SMCの平均最大値（100%%基準値）: %.4f\n", overall_peak_smc))
+
+# 相対閾値対応の過湿指標計算関数
+calc_period_wetness_rel <- function(df_sub, rel_th_ratio, smc_max_base) {
+  if (nrow(df_sub) == 0) {
+    return(data.frame(
+      period_days = 0, max_cont_wet_days = 0, total_wet_days = 0,
+      mean_smc_all = NA, mean_smc_wet = NA, excess_smc_sum = 0
+    ))
+  }
+  
+  th_val <- smc_max_base * rel_th_ratio
+  smc <- df_sub$SMC_pred
+  is_wet <- smc >= th_val
+  rl <- rle(is_wet)
+  
+  data.frame(
+    period_days        = nrow(df_sub),
+    max_cont_wet_days  = if (any(rl$values)) max(rl$lengths[rl$values]) else 0,
+    total_wet_days     = sum(is_wet, na.rm = TRUE),
+    mean_smc_all       = mean(smc, na.rm = TRUE),
+    mean_smc_wet       = if (sum(is_wet) > 0) mean(smc[is_wet], na.rm = TRUE) else NA,
+    excess_smc_sum     = sum(pmax(0, smc - th_val) / (smc_max_base - th_val + 1e-6), na.rm = TRUE)
+  )
+}
+
+# 分析用設定
+rel_thresholds <- c(0.70, 0.80, 0.90, 1.00)
+rel_labels_vec <- c("Rel_70%", "Rel_80%", "Rel_90%", "Rel_100%")
+
+metric_order <- c("連続過湿日数", "合計の過湿日数", "平均の水分量", "過湿の強さ×日数")
+metrics_map  <- c(
+  "連続過湿日数"   = "max_cont_wet_days", 
+  "合計の過湿日数" = "total_wet_days", 
+  "平均の水分量"   = "mean_smc_all", 
+  "過湿の強さ×日数" = "excess_smc_sum"
+)
+
+period_list  <- c("1_初期(播種-V2)", "2_中期(V2-V5)", "3_開花(V5-R1)", "4_全期(播種-R1)")
+target_years <- intersect(unique(df_pred$year), unique(df_stages$year))
+
+# ---------------------------------------------------------
+# 2. メイン処理ループ（年度ごと）
+# ---------------------------------------------------------
+for (y in target_years) {
+  cat(paste0("\n=========================================\n"))
+  cat(paste0("  ", y, "年度のハードルベータ回帰パイプラインを実行中...\n"))
+  cat(paste0("=========================================\n"))
+  
+  df_pred_year <- df_pred %>% filter(year == y)
+  
+  # A. 各相対閾値での集計
+  results_list <- list()
+  for (r_th in rel_thresholds) {
+    th_label <- paste0("Rel_", as.integer(round(r_th * 100)), "%")
+    
+    df_wetness_th <- df_pred_year %>%
+      inner_join(df_stages %>% filter(year == y), by = c("year", "site")) %>%
+      group_by(site) %>%
+      group_modify(~ {
+        df_site <- .x
+        s_d  <- df_site$pred_seeding_date[1]
+        v2_d <- df_site$v2_date[1]
+        v5_d <- df_site$v5_date[1]
+        r1_d <- df_site$r1_date[1]
+        dis  <- if ("disease" %in% names(df_site)) df_site$disease[1] else NA
+        
+        bind_rows(
+          data.frame(disease = dis, period = "1_初期(播種-V2)", calc_period_wetness_rel(filter(df_site, date >= s_d & date <= v2_d), r_th, overall_peak_smc)),
+          data.frame(disease = dis, period = "2_中期(V2-V5)",   calc_period_wetness_rel(filter(df_site, date >= v2_d & date <= v5_d), r_th, overall_peak_smc)),
+          data.frame(disease = dis, period = "3_開花(V5-R1)",   calc_period_wetness_rel(filter(df_site, date >= v5_d & date <= r1_d), r_th, overall_peak_smc)),
+          data.frame(disease = dis, period = "4_全期(播種-R1)",  calc_period_wetness_rel(filter(df_site, date >= s_d & date <= r1_d), r_th, overall_peak_smc))
+        )
+      }) %>% 
+      ungroup() %>% 
+      mutate(
+        threshold = th_label,
+        rcr_prop  = disease / 100,
+        rcr_prop  = ifelse(rcr_prop >= 1, 0.9999, rcr_prop)
+      )
+    
+    results_list[[th_label]] <- df_wetness_th
+  }
+  
+  df_wetness_summary <- bind_rows(results_list)
+  
+  # ---------------------------------------------------------
+  # B. ハードルベータ回帰分析 (glmmTMB)
+  # ---------------------------------------------------------
+  all_hurdle_results <- list()
+  
+  for (th in rel_labels_vec) {
+    for (pr in period_list) {
+      df_sub <- filter(df_wetness_summary, threshold == th & period == pr)
+      for (m_label in names(metrics_map)) {
+        col_n <- metrics_map[[m_label]]
+        v_data <- filter(df_sub, !is.na(rcr_prop) & !is.na(.data[[col_n]]))
+        
+        if (nrow(v_data) < 5 || var(v_data[[col_n]], na.rm = TRUE) == 0) {
+          beta_p <- NA; hurdle_p <- NA; aic_val <- NA
+        } else {
+          form_cond <- as.formula(paste("rcr_prop ~", col_n))
+          form_zi   <- as.formula(paste("~", col_n)) # ハードル部分（非発症確率）にも同変量を導入
+          
+          # glmmTMBでハードルベータ（またはZero-Inflated Betaの変数共変量指定）をフィッティング
+          fit_hurdle <- tryCatch({
+            glmmTMB(
+              formula   = form_cond,
+              ziformula = form_zi,
+              family    = beta_family(link = "logit"),
+              data      = v_data
+            )
+          }, error = function(e) NULL)
+          
+          if (!is.null(fit_hurdle)) {
+            sum_fit   <- summary(fit_hurdle)
+            coef_cond <- sum_fit$coefficients$cond # ベータ部分（重症度）
+            coef_zi   <- sum_fit$coefficients$zi   # ゼロモデル部分（発症有無）
+            
+            beta_p   <- if (nrow(coef_cond) >= 2) coef_cond[2, 4] else NA
+            hurdle_p <- if (nrow(coef_zi) >= 2) coef_zi[2, 4] else NA
+            aic_val  <- AIC(fit_hurdle)
+          } else {
+            beta_p <- NA; hurdle_p <- NA; aic_val <- NA
+          }
+        }
+        
+        all_hurdle_results[[length(all_hurdle_results) + 1]] <- data.frame(
+          年度 = y, 閾値 = th, 時期 = pr, 評価指標 = m_label,
+          Beta_p_val = round(beta_p, 5),     # 重症度への影響のp値
+          Hurdle_p_val = round(hurdle_p, 5), # 発症有無（ハードル）への影響のp値
+          AIC = round(aic_val, 2)
+        )
+      }
+    }
+  }
+  
+  df_hurdle_all <- bind_rows(all_hurdle_results)
+  write.csv(df_hurdle_all, paste0(output_dir, "hurdle_beta_regression_", y, ".csv"), row.names = FALSE, fileEncoding = "CP932")
+  
+  # ---------------------------------------------------------
+  # C. ヒートマップ（重症度 Beta_p_val の描画）
+  # ---------------------------------------------------------
+  df_hurdle_plot <- df_hurdle_all %>%
+    mutate(
+      metric    = factor(評価指標, levels = metric_order),
+      threshold = factor(閾値, levels = rel_labels_vec),
+      period    = 時期,
+      log_p     = ifelse(!is.na(Beta_p_val) & Beta_p_val > 0, -log10(Beta_p_val), NA),
+      p_text    = ifelse(is.na(Beta_p_val), "-",
+                  ifelse(Beta_p_val < 0.001, "<.001", sprintf("%.3f", Beta_p_val)))
+    )
+  
+  p_hurdle_heatmap <- ggplot(df_hurdle_plot, aes(x = metric, y = threshold, fill = log_p)) +
+    geom_tile(color = "white", linewidth = 0.8) +
+    coord_fixed(ratio = 0.35) + 
+    geom_text(
+      aes(label = p_text), 
+      color = "black", 
+      size = 4.2, 
+      fontface = "bold"
+    ) +
+    scale_fill_gradientn(
+      colors   = c("#ffffe5", "#fff7bc", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04"),
+      na.value = "gray90",
+      name     = "-log10(p)"
+    ) +
+    facet_wrap(~ period, ncol = 2) +
+    labs(
+      title = paste0(y, "年 ハードルベータ回帰の p値（被害重症度: Beta Part）"),
+      subtitle = "※セル内数値は Beta部分のp値 (赤色が濃いほど p < 0.05 で高度に有意)",
+      x     = "評価指標",
+      y     = "SMC 相対閾値"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 17, hjust = 0.5, margin = margin(b = 4)),
+      plot.subtitle    = element_text(size = 11, hjust = 0.5, margin = margin(b = 10)),
+      strip.background = element_rect(fill = "gray90", color = "black"),
+      strip.text       = element_text(face = "bold", size = 14), 
+      axis.title.y     = element_text(face = "bold", size = 16),
+      axis.text.y      = element_text(size = 13, face = "bold", color = "black"),
+      axis.title.x     = element_text(face = "bold", size = 13),
+      axis.text.x      = element_text(angle = 25, hjust = 1, size = 10.5, face = "bold", color = "black"),
+      legend.title     = element_text(face = "bold", size = 11),
+      legend.text      = element_text(size = 9.5),
+      panel.grid       = element_blank()
+    )
+  
+  heatmap_out_path <- paste0(output_dir, "heatmap_pvalue_hurdle_beta_", y, ".png")
+  ggsave(heatmap_out_path, plot = p_hurdle_heatmap, width = 12, height = 4.5, dpi = 300)
+  cat(paste0("  [1/2] ヒートマップ保存完了: ", heatmap_out_path, "\n"))
+  
+  # ---------------------------------------------------------
+  # D. 最も精度が高いモデルの散布図プロット描画
+  # ---------------------------------------------------------
+  best_row <- df_hurdle_all %>%
+    filter(!is.na(Beta_p_val)) %>%
+    arrange(Beta_p_val, AIC) %>%
+    slice(1)
+  
+  if (nrow(best_row) == 0) next
+  
+  best_period   <- as.character(best_row$時期)
+  best_th_str   <- as.character(best_row$閾値)
+  best_m_label  <- as.character(best_row$評価指標)
+  best_col_name <- metrics_map[[best_m_label]]
+  
+  df_target <- df_wetness_summary %>%
+    filter(period == best_period, threshold == best_th_str) %>%
+    filter(!is.na(rcr_prop) & !is.na(.data[[best_col_name]]))
+  
+  fit_best <- glmmTMB(
+    formula   = as.formula(paste("rcr_prop ~", best_col_name)), 
+    ziformula = as.formula(paste("~", best_col_name)), 
+    family    = beta_family(link = "logit"), 
+    data      = df_target
+  )
+  
+  p_val_beta   <- best_row$Beta_p_val
+  p_val_hurdle <- best_row$Hurdle_p_val
+  
+  fmt_p <- function(p) {
+    if (is.na(p)) return("NA")
+    if (p < 0.001) return("< 0.001")
+    if (p < 0.01)  return("< 0.01")
+    if (p < 0.05)  return("< 0.05")
+    return(sprintf("= %.3f", p))
+  }
+  
+  stat_label <- sprintf("Hurdle Beta Model\nAIC = %.1f\nBeta p %s\nHurdle p %s", 
+                        best_row$AIC, fmt_p(p_val_beta), fmt_p(p_val_hurdle))
+  plot_title <- paste0(y, "年 最高精度モデル: ハードルベータ回帰 (", best_period, ", ", best_m_label, ", ", best_th_str, ")")
+  
+  # 予測値の算出
+  new_x <- seq(min(df_target[[best_col_name]], na.rm = TRUE), max(df_target[[best_col_name]], na.rm = TRUE), length.out = 100)
+  pred_grid <- data.frame(x_val = new_x)
+  names(pred_grid) <- best_col_name
+  
+  pred_res <- predict(fit_best, newdata = pred_grid, type = "response")
+  pred_df  <- data.frame(x = new_x, y_pred = pred_res * 100)
+  
+  p_hurdle_plot <- ggplot() +
+    geom_point(data = df_target, aes(x = .data[[best_col_name]], y = disease), color = "#2b8cbe", alpha = 0.75, size = 4.5) +
+    geom_line(data = pred_df, aes(x = x, y = y_pred), color = "#d95f02", linewidth = 1.6) +
+    annotate(
+      "label", 
+      x = max(df_target[[best_col_name]], na.rm = TRUE) * 0.75, 
+      y = max(df_target$disease, na.rm = TRUE) * 0.82,
+      label = stat_label, fill = "white", color = "black", size = 5.0, fontface = "bold",
+      label.padding = unit(0.5, "lines"), linewidth = 0.8
+    ) +
+    labs(
+      title = plot_title,
+      x     = paste0(best_m_label, " (相対指標)"),
+      y     = "病気発生率 RCR (%)"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 18, hjust = 0.5, margin = margin(b = 12)),
+      axis.title       = element_text(face = "bold", size = 16),
+      axis.text        = element_text(size = 14, face = "bold", color = "black"),
+      panel.grid.minor = element_blank()
+    )
+  
+  plot_out_path <- paste0(output_dir, "best_hurdle_plot_relative_", y, ".png")
+  ggsave(plot_out_path, plot = p_hurdle_plot, width = 12, height = 4.5, dpi = 300)
+  cat(paste0("  [2/2] 散布図プロット保存完了: ", plot_out_path, "\n"))
+}
+
+cat("\n🎉 ハードルベータ解析の「ヒートマップ」および「散布図」の出力がすべて完了しました！\n")
