@@ -1,0 +1,211 @@
+# =========================================================
+# 04_06_random_forest_shap_analysis.R
+# 相対閾値の全指標を網羅したランダムフォレスト回帰 ＋ SHAP解析 (fastshap不使用版)
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+
+# 必要パッケージの確認＆自動インストール (fastshapを除外しtreeshap/kernelshapを追加)
+required_pkgs <- c("ranger", "shapviz", "treeshap")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    try(install.packages(pkg))
+  }
+}
+library(ranger)
+library(shapviz)
+
+# 出力フォルダの準備
+output_dir <- "03_AnalysisOutputs_RF_SHAP/"
+dir.create(output_dir, showWarnings = FALSE)
+
+# ---------------------------------------------------------
+# 1. 必要データの読み込み＆型統一
+# ---------------------------------------------------------
+df_pred <- read.csv("02_ModelOutputs/soil_moisture_pred_4years_full.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    date = as.Date(date), 
+    year = year(date),
+    site = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+df_stages <- read.csv("01_ProcessedData/crop_stages_predicted.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    pred_seeding_date = as.Date(pred_seeding_date),
+    v2_date           = as.Date(v2_date),
+    v5_date           = as.Date(v5_date),
+    r1_date           = as.Date(r1_date),
+    year              = as.numeric(year),
+    site              = as.numeric(gsub("[^0-9]", "", as.character(site)))
+  )
+
+# 推定SMCの100%基準値算出
+overall_peak_smc <- df_pred %>%
+  group_by(date) %>%
+  summarise(daily_mean_smc = mean(SMC_pred, na.rm = TRUE), .groups = "drop") %>%
+  summarise(max_peak = max(daily_mean_smc, na.rm = TRUE)) %>%
+  pull(max_peak)
+
+# 相対閾値対応の過湿指標計算関数
+calc_period_wetness_rel <- function(df_sub, rel_th_ratio, smc_max_base) {
+  if (nrow(df_sub) == 0) {
+    return(data.frame(
+      max_cont_wet_days = 0, total_wet_days = 0, mean_smc_all = NA, excess_smc_sum = 0
+    ))
+  }
+  th_val <- smc_max_base * rel_th_ratio
+  smc <- df_sub$SMC_pred
+  is_wet <- smc >= th_val
+  rl <- rle(is_wet)
+  
+  data.frame(
+    max_cont_wet_days  = if (any(rl$values)) max(rl$lengths[rl$values]) else 0,
+    total_wet_days     = sum(is_wet, na.rm = TRUE),
+    mean_smc_all       = mean(smc, na.rm = TRUE),
+    excess_smc_sum     = sum(pmax(0, smc - th_val) / (smc_max_base - th_val + 1e-6), na.rm = TRUE)
+  )
+}
+
+rel_thresholds <- c(0.70, 0.80, 0.90, 1.00)
+period_list    <- c("初期", "中期", "開花", "全期")
+target_years   <- intersect(unique(df_pred$year), unique(df_stages$year))
+
+# ---------------------------------------------------------
+# 2. メイン処理ループ（年度ごと）
+# ---------------------------------------------------------
+for (y in target_years) {
+  cat(paste0("\n=========================================\n"))
+  cat(paste0("  ", y, "年度のランダムフォレスト ＋ SHAP解析を実行中...\n"))
+  cat(paste0("=========================================\n"))
+  
+  df_pred_year <- df_pred %>% filter(year == y)
+  
+  # A. 全特徴量（4時期 × 4閾値 × 4指標 = 64変数）の一括作成 (Wide format)
+  wide_list <- list()
+  
+  for (r_th in rel_thresholds) {
+    th_label <- paste0("Rel", as.integer(round(r_th * 100)))
+    
+    df_wetness_th <- df_pred_year %>%
+      inner_join(df_stages %>% filter(year == y), by = c("year", "site")) %>%
+      group_by(site) %>%
+      group_modify(~ {
+        df_site <- .x
+        s_d  <- df_site$pred_seeding_date[1]
+        v2_d <- df_site$v2_date[1]
+        v5_d <- df_site$v5_date[1]
+        r1_d <- df_site$r1_date[1]
+        dis  <- if ("disease" %in% names(df_site)) df_site$disease[1] else NA
+        
+        res1 <- calc_period_wetness_rel(filter(df_site, date >= s_d & date <= v2_d), r_th, overall_peak_smc)
+        res2 <- calc_period_wetness_rel(filter(df_site, date >= v2_d & date <= v5_d), r_th, overall_peak_smc)
+        res3 <- calc_period_wetness_rel(filter(df_site, date >= v5_d & date <= r1_d), r_th, overall_peak_smc)
+        res4 <- calc_period_wetness_rel(filter(df_site, date >= s_d & date <= r1_d), r_th, overall_peak_smc)
+        
+        colnames(res1) <- paste0("初期_", th_label, "_", colnames(res1))
+        colnames(res2) <- paste0("中期_", th_label, "_", colnames(res2))
+        colnames(res3) <- paste0("開花_", th_label, "_", colnames(res3))
+        colnames(res4) <- paste0("全期_", th_label, "_", colnames(res4))
+        
+        data.frame(disease = dis, cbind(res1, res2, res3, res4))
+      }) %>% 
+      ungroup()
+    
+    wide_list[[th_label]] <- df_wetness_th
+  }
+  
+  df_rf_all <- wide_list[[1]]
+  for (k in 2:length(wide_list)) {
+    df_rf_all <- df_rf_all %>% 
+      left_join(wide_list[[k]] %>% select(-disease), by = "site")
+  }
+  
+  df_model <- df_rf_all %>% filter(!is.na(disease))
+  y_data   <- df_model$disease
+  x_data   <- df_model %>% select(-site, -disease)
+  
+  nz_cols <- sapply(x_data, function(col) var(col, na.rm = TRUE) > 0)
+  x_data  <- x_data[, nz_cols, drop = FALSE]
+  
+  if (nrow(df_model) < 5 || ncol(x_data) == 0) {
+    cat(sprintf("⚠️ %d年のデータ数が不十分のためスキップします。\n", y))
+    next
+  }
+  
+  # ---------------------------------------------------------
+  # B. ランダムフォレスト回帰の学習 (ranger)
+  # ---------------------------------------------------------
+  set.seed(123)
+  rf_fit <- ranger(
+    y = y_data,
+    x = x_data,
+    num.trees = 500,
+    importance = "permutation",
+    seed = 123
+  )
+  
+  cat(sprintf("🌲 %d年 ランダムフォレスト R2 (Out-of-Bag): %.3f\n", y, rf_fit$r.squared))
+  
+  # ---------------------------------------------------------
+  # C. SHAP値の計算 (treeshap または shapviz直呼び出し)
+  # ---------------------------------------------------------
+  shp <- tryCatch({
+    # 方法1: treeshapを使用
+    if (requireNamespace("treeshap", quietly = TRUE)) {
+      unified <- treeshap::ranger.unify(rf_fit, x_data)
+      ts_res  <- treeshap::treeshap(unified, x_data, verbose = FALSE)
+      shapviz(ts_res)
+    } else {
+      stop("treeshap not available")
+    }
+  }, error = function(e) {
+    # 方法2: treeshapが使えない場合のフォールバック（shapviz/perm-based）
+    shapviz(rf_fit, X_pred = x_data, X = x_data)
+  })
+  
+  # ---------------------------------------------------------
+  # D. SHAPプロットの出力
+  # ---------------------------------------------------------
+  # 1. SHAP Summary Plot
+  p_summary <- sv_importance(shp, kind = "beeswarm", show_numbers = TRUE, max_display = 15) +
+    theme_bw(base_size = 12) +
+    labs(
+      title = paste0(y, "年 ランダムフォレスト SHAP Summary Plot (Top 15)"),
+      subtitle = "※右に行くほど病気発生率(RCR%)を上昇させる効果。色が赤いほど指標の値が大きい。",
+      x = "SHAP値 (RCR% への影響度)"
+    ) +
+    theme(
+      plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+      plot.subtitle = element_text(size = 10, hjust = 0.5)
+    )
+  
+  summary_out_path <- paste0(output_dir, "shap_summary_plot_", y, ".png")
+  ggsave(summary_out_path, plot = p_summary, width = 11, height = 6.5, dpi = 300)
+  cat(paste0("  [1/2] SHAP Summary Plot 保存完了: ", summary_out_path, "\n"))
+  
+  # 2. 最重要特徴量の SHAP Dependence Plot
+  top_feature <- colnames(shp$S)[order(colMeans(abs(shp$S)), decreasing = TRUE)][1]
+  
+  p_dependence <- sv_dependence(shp, v = top_feature, color_var = "auto") +
+    geom_smooth(method = "loess", se = FALSE, color = "red", linetype = "dashed") +
+    theme_bw(base_size = 13) +
+    labs(
+      title = paste0(y, "年 最重要指標の SHAP Dependence Plot"),
+      subtitle = paste0("最重要特徴量: ", top_feature),
+      x = paste0(top_feature, " の値"),
+      y = "SHAP値 (RCR% 押し上げ効果)"
+    ) +
+    theme(
+      plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5)
+    )
+  
+  dependence_out_path <- paste0(output_dir, "shap_dependence_plot_", y, ".png")
+  ggsave(dependence_out_path, plot = p_dependence, width = 9, height = 5.5, dpi = 300)
+  cat(paste0("  [2/2] SHAP Dependence Plot 保存完了: ", dependence_out_path, "\n"))
+}
+
+cat("\n🎉 ランダムフォレスト ＋ SHAP解析の全出力が完了しました！\n")
